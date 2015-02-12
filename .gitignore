@@ -1,0 +1,8 @@
+# Ignore compiled python files
+*.pyc
+
+# Ignore data directory
+data/
+
+# Ignore PyCharm directory
+.idea/
