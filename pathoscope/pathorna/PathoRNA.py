@@ -25,58 +25,88 @@ from pathoscope.utils import pathoUtilsA
 from pathoscope.utils import samUtils
 from pathoscope.pathoreport import PathoReportA
 
-class FeatureLookup:
-  def __init__(self,gtffile,attr_name="locus"):
-    from collections import defaultdict
-    import re
-    fh = open(gtffile,'rU') if isinstance(gtffile,str) else gtffile
-    lines = (l.strip('\n').split('\t') for l in fh if not l.startswith('#'))
 
-    self._gdict = defaultdict(list)
-    self._locus = []
-    for i,l in enumerate(lines):
-      attr = dict(re.search('(\S+)\s"(.+?)"',f.strip()).groups() for f in l[8].split(';') if f.strip())
-      self._locus.append( attr[attr_name] if attr_name in attr else 'PSRE%04d' % i )
-      self._gdict[l[0]].append((int(l[3]),int(l[4]),i))
+class PathoREOptions:
+  ali_file = ""
+  verbose = False
+  score_cutoff = 0.01
+  exp_tag = ""
+  ali_format = "sam"
+  outdir = ""
+  emEpsilon = 0.01
+  maxIter = 50
+  piPrior = 0
+  thetaPrior = 0
+  out_matrix_flag = True
+  noalign = False
+  def __init__(self, ali_file):
+    self.ali_file = ali_file
 
-  def lookup(self,chr,pos):
-    # Tests every locus in chromosome
-    feats = [i for s,e,i in self._gdict[chr] if s <= pos <= e]
-    if len(feats)==0:
-      return None
+
+
+'''
+0x1   is_paired
+0x2   is_proper_pair
+0x4   is_unmapped
+0x8   mate_is_unmapped
+0x10  is_reverse
+0x20  mate_is_reverse
+0x40  is_read1
+0x80  is_read2
+0x100 is_secondary
+0x200 is_qcfail
+0x400 is_duplicate
+0x800 supplementary alignment
+
+
+B201TJABXX:3:1:6600:2407
+
+'''
+
+def conv_align2GRmat(aliDfile, gtffile, pScoreCutoff, aliFormat):
+  import pysam
+  from utils import PSAlignment, PSRead, FeatureLookup
+  from utils import iterread
+
+  unique    = {}
+  repeat    = {}
+  readnames = set()
+  genomes   = set()
+
+  maxscore = float('-inf')
+  minscore = float('inf')
+
+  # Load features from GTF file
+  flookup = FeatureLookup(gtffile)
+
+  # Open samfile using pysam
+  samfile = pysam.AlignmentFile(aliDfile)
+  # Lookup reference name from reference ID
+  refnames = dict(enumerate(samfile.references))
+
+  for rname,segments in iterread(samfile):
+    r = PSRead(rname,segments)
+    if r.is_unmapped: continue
+    readnames.add(rname)
+    r.assign_feats(refnames,flookup)
+    rname,data = r.structured_data()
+    genomes.update(set(data[0]))
+    # Set max and min scores
+    maxscore = max(maxscore,data[3])
+    minscore = min(minscore,min(data[1]))
+
+    if len(data[0]) == 1:
+      unique[rname] = data
     else:
-      assert len(feats)==1
-      return feats[0]
+      repeat[rname] = data
 
-  def feature_name(self,id):
-    return self._locus[id]
+    if len(readnames) >= 1000:
+      break
 
-"""
-gtffile = 'knownHERV.hg19.gtf'
-fl.lookup('chr1',247271645)
-
+  samfile.close()
+  return unique, repeat, genomes, readnames
 
 """
-
-
-
-
-class PathoIdOptions:
-	ali_file = ""
-	verbose = False
-	score_cutoff = 0.01
-	exp_tag = ""
-	ali_format = "sam"
-	outdir = ""
-	emEpsilon = 0.01 
-	maxIter = 50
-	piPrior = 0
-	thetaPrior = 0
-	out_matrix_flag = True
-	noalign = False
-	def __init__(self, ali_file):
-		self.ali_file = ali_file
-
 # ===========================================================
 def conv_align2GRmat(aliDfile,pScoreCutoff,aliFormat):
 	in1 = open(aliDfile,'r')
@@ -169,6 +199,7 @@ def conv_align2GRmat(aliDfile,pScoreCutoff,aliFormat):
 		NU[rIdx][2] = [k/pScoreSum for k in NU[rIdx][1]] #Normalizing pScore
 
 	return U, NU, genomes, read
+"""
 
 # ===========================================================
 # Entry function to PathoID
@@ -522,4 +553,5 @@ def find_entry_score(ln, l, aliFormat, pScoreCutoff):
 	#if pScore < 1:
 	#	skipFlag = true
 	return (pScore, skipFlag)
+
 
