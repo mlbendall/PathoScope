@@ -6,3 +6,7 @@ data/
 
 # Ignore PyCharm directory
 .idea/
+
+# Ignore workspace files
+workspace*.py
+

@@ -1,13 +1,36 @@
 __author__ = 'bendall'
 
 import pysam
+import math
+from collections import defaultdict
+import re
+
 
 NO_FEATURE_KEY = '__nofeature__'
 
+def phred(f):
+  return int(round(-10 * math.log10(1 - f))) if f < 1.0 else 255
+
+def iterread(samfile):
+  ''' Each iteration returns all alignments that have the same read ID
+      The file is expected to be sorted by queryname (default output from bowtie2)
+      Parameters:
+        samfile - pysam.AlignmentFile
+  '''
+  ralns = [samfile.next()]
+  current = ralns[0].query_name
+  for aln in samfile:
+    if aln.query_name == current:
+      ralns.append(aln)
+    else:
+      yield current,ralns
+      ralns = [aln]
+      current = aln.query_name
+  yield current,ralns
+
+
 class FeatureLookup:
   def __init__(self,gtffile,attr_name="locus"):
-    from collections import defaultdict
-    import re
     fh = open(gtffile,'rU') if isinstance(gtffile,str) else gtffile
     lines = (l.strip('\n').split('\t') for l in fh if not l.startswith('#'))
     # List of locus names
@@ -54,25 +77,6 @@ class FeatureLookup:
   def feature_name(self,id):
     return self._locus[id]
 
-
-
-def iterread(samfile):
-  ''' Each iteration returns all alignments that have the same read ID
-      The file is expected to be sorted by queryname (default output from bowtie2)
-      Parameters:
-        samfile - pysam.AlignmentFile
-  '''
-  ralns = [samfile.next()]
-  current = ralns[0].query_name
-  for aln in samfile:
-    if aln.query_name == current:
-      ralns.append(aln)
-    else:
-      yield current,ralns
-      ralns = [aln]
-      current = aln.query_name
-  yield current,ralns
-
 class PSAlignment:
   """
   One distinct alignment. For properly paired segments (paired end) this has two segments,
@@ -107,6 +111,8 @@ class PSAlignment:
     self.seg1.setTag(tag,value)
     if self.seg2 is not None:
       self.seg2.setTag(tag,value)
+    # Return instance to allow chaining
+    return self
 
   def coordinates(self):
     if self.is_unmapped:
@@ -160,50 +166,39 @@ class PSRead:
         else:
           self.features[i] = self.nofeature
 
-  def best_for_feature(self,feat):
+  def assign_best(self):
     import random
-    alist = [a for f,a in zip(self.features,self.alignments) if f==feat]
-    if len(alist)==1:
-      return alist[0]
-    else:
-      alist.sort(key=lambda x:x.NM)
-      alist.sort(key=lambda x:x.AS,reverse=True)
-      poss = [a for a in alist if a.AS==alist[0].AS and a.NM==alist[0].NM]
-      if len(poss)==1:
-        return poss[0]
-      else:
-        return random.choice(poss)
-
-  def best_alignments(self):
     from collections import defaultdict
-    from random import choice
 
-    bpf = []
-    # group alignments according to feature
-    byfeat = defaultdict(list)
+    # Group alignments according to feature
+    tmp = defaultdict(list)
     for f,a in zip(self.features,self.alignments):
-      if f is not None:
-        byfeat[f].append(a)
+      if f is not None: # Alignments that did not get assigned to a feature will have None
+        tmp[f].append(a)
 
-    # get the best alignment for each feature
-    for f,alist in byfeat.iteritems():
-      if len(alist)==1:            # Only one alignment to this feature
-        bpf.append((f,alist[0]))
-      else:                        # Multiple alignments to this feature
+    # Assign the best alignment within each feature
+    self.feat_aln_map = {}
+    for f,alist in tmp.iteritems():
+      if len(alist)==1:
+        self.feat_aln_map[f] = alist[0]
+      else:
+        # Sort by edit distance, then by alignment score
         alist.sort(key=lambda x:x.NM)
         alist.sort(key=lambda x:x.AS,reverse=True)
-        poss = [a for a in alist if a.AS==alist[0].AS and a.NM==alist[0].NM]
-        if len(poss) == 1:
-          bpf.append((f,poss[0]))
-        else:                      # Choose randomly from best alignments
-          bpf.append((f,choice(poss)))
-    return bpf
+        # Choose randomly from best alignments
+        self.feat_aln_map[f] = random.choice([a for a in alist if a.AS==alist[0].AS and a.NM==alist[0].NM])
+
+  def unique_feat(self):
+    ''' Returns True if read maps to exactly one feature '''
+    return len(self.feat_aln_map)==1
+
+  def aligned_to_genome(self,genome_name):
+    primary = self.feat_aln_map[genome_name]
+    alternates = [a for f,a in zip(self.features,self.alignments) if f==genome_name]
+    alternates = [a for a in alternates if not a == primary and a.AS==primary.AS and a.NM==primary.NM]
+    return primary, alternates
 
   def structured_data(self):
-    baln = self.best_alignments()
-    baln.sort(key=lambda x:x[1].AS+x[1].query_length, reverse=True)
-    _genomes = [_[0] for _ in baln]
-    _scores  = [(_[1].AS + _[1].query_length) for _ in baln]
-    _norm    = [float(_scores[0])]
-    _best    = _scores[0]
-    return self.readname,[_genomes,_scores,_norm,_best]
+    _genomes,alns = zip(*self.feat_aln_map.iteritems())
+    _scores = [a.AS + a.query_length for a in alns]
+    return [list(_genomes),_scores,[float(_scores[0])],max(_scores)]

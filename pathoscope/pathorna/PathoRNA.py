@@ -1,8 +1,10 @@
-#!/usr/bin/python
+#! /usr/bin/env python
+__author__ = 'bendall'
+
 # Initial author: Solaiappan Manimaran
 # Functions to read alignment file (sam/gnu-sam or bl8), run EM algorithm
-# and output report file that can be opened in Excel and also 
-# output updated alignment file (sam/gnu-sam or bl8)  
+# and output report file that can be opened in Excel and also
+# output updated alignment file (sam/gnu-sam or bl8)
 
 #	Pathoscope - Predicts strains of genomes in Nextgen seq alignment file (sam/bl8)
 #	Copyright (C) 2013  Johnson Lab - Boston University
@@ -20,538 +22,255 @@
 #	You should have received a copy of the GNU General Public License
 #	along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import os, math, csv, re, sys
-from pathoscope.utils import pathoUtilsA
+import os, sys
+import pysam
+from pathoscope.pathorna.utils import PSRead, FeatureLookup
+from pathoscope.pathorna.utils import iterread
 from pathoscope.utils import samUtils
-from pathoscope.pathoreport import PathoReportA
 
+class PathoRNAOptions:
+  option_fields = ['verbose','score_cutoff','out_matrix','no_updated_sam','emEpsilon','maxIter','piPrior','thetaPrior',
+                   'exp_tag','outdir','ali_format','ali_file','gtf_file', 'out_samfile']
 
-class PathoREOptions:
-  ali_file = ""
-  verbose = False
-  score_cutoff = 0.01
-  exp_tag = ""
-  ali_format = "sam"
-  outdir = ""
-  emEpsilon = 0.01
-  maxIter = 50
-  piPrior = 0
-  thetaPrior = 0
-  out_matrix_flag = True
-  noalign = False
-  def __init__(self, ali_file):
-    self.ali_file = ali_file
+  def __init__(self,alnfile,gtffile,**kwargs):
+    # Default option values
+    self.verbose         = False
+    self.score_cutoff    = 0.01
+    self.out_matrix      = False
+    self.no_updated_sam  = False
+    self.emEpsilon       = 1e-7
+    self.maxIter         = 50
+    self.piPrior         = 0
+    self.thetaPrior      = 0
+    self.exp_tag         = 'pathorna'
+    self.outdir          = '.'
+    self.ali_format      = 'sam'
+    self.out_samfile     = None
+    self.ali_file        = os.path.abspath(alnfile)
+    self.gtf_file        = os.path.abspath(gtffile)
 
+    # Set any other options passed in kwargs
+    for k,v in kwargs.iteritems():
+      if v is None: continue
+      assert hasattr(self,k)
+      if getattr(self,k) != v: setattr(self,k,v)
 
+    self.outdir = os.path.abspath(self.outdir)
 
-'''
-0x1   is_paired
-0x2   is_proper_pair
-0x4   is_unmapped
-0x8   mate_is_unmapped
-0x10  is_reverse
-0x20  mate_is_reverse
-0x40  is_read1
-0x80  is_read2
-0x100 is_secondary
-0x200 is_qcfail
-0x400 is_duplicate
-0x800 supplementary alignment
+    if self.out_samfile is None:
+      self.out_samfile = self.generate_filename('updated.sam')
 
+    """
+    # If outfile was not specified, set path for outfile
+    if self.out_samfile is None:
+      basename = os.path.split(self.ali_file)[1]
+      fn,ext = os.path.splitext(basename)
+      if ext == '.sam':
+        self.out_samfile = os.path.join(self.outdir,'%s.updated.sam' % fn)
+      else:
+        self.out_samfile = os.path.join(self.outdir,'%s.updated.sam' % fn)
+    """
 
-B201TJABXX:3:1:6600:2407
+  def generate_filename(self,suffix):
+    basename = '%s-%s-%s' % (self.exp_tag, self.ali_format, suffix)
+    return os.path.join(self.outdir,basename)
 
-'''
+  def __str__(self):
+    _ret = "PathoRNAOptions:\n"
+    _ret += '\n'.join('  %s%s' % (f.ljust(30),getattr(self,f)) for f in self.option_fields)
+    return _ret
 
-def conv_align2GRmat(aliDfile, gtffile, pScoreCutoff, aliFormat):
-  import pysam
-  from utils import PSAlignment, PSRead, FeatureLookup
-  from utils import iterread
+def wrap_pathoscope_em(unique,repeat,genomes,opts):
+  from pathoscope.pathoid import PathoID
+  return PathoID.pathoscope_em(unique, repeat, genomes, opts.maxIter, opts.emEpsilon, opts.verbose, opts.piPrior, opts.thetaPrior)
 
-  unique    = {}
-  repeat    = {}
-  readnames = set()
-  genomes   = set()
+def wrap_computeBestHit(unique,repeat,genomes,reads):
+  from pathoscope.pathoreport import PathoReportA
+  tup = PathoReportA.computeBestHit(unique, repeat, genomes, reads)
+  labels = ['bestHitReads','bestHit','level1','level2']
+  return dict(zip(labels,tup))
 
-  maxscore = float('-inf')
-  minscore = float('inf')
+def parse_reads(samfile, flookup):
+  from pathoscope.pathorna.utils import PSRead
+  from pathoscope.pathorna.utils import iterread
 
-  # Load features from GTF file
-  flookup = FeatureLookup(gtffile)
+  allreads = {}
 
-  # Open samfile using pysam
-  samfile = pysam.AlignmentFile(aliDfile)
   # Lookup reference name from reference ID
   refnames = dict(enumerate(samfile.references))
 
   for rname,segments in iterread(samfile):
-    r = PSRead(rname,segments)
+    allreads[rname] = PSRead(rname,segments)
+    allreads[rname].assign_feats(refnames, flookup)
+    allreads[rname].assign_best()
+    # if len(allreads) >= 2000: break
+
+  return allreads
+
+def data_matrix(reads):
+  from pathoscope.utils import samUtils
+  _unique = {}
+  _repeat = {}
+  maxscore = float('-inf')
+  minscore = float('inf')
+  gset = set()
+  for rname,r in reads.iteritems():
     if r.is_unmapped: continue
-    readnames.add(rname)
-    r.assign_feats(refnames,flookup)
-    rname,data = r.structured_data()
-    genomes.update(set(data[0]))
-    # Set max and min scores
-    maxscore = max(maxscore,data[3])
-    minscore = min(minscore,min(data[1]))
-
-    if len(data[0]) == 1:
-      unique[rname] = data
+    d = r.structured_data()
+    gset.update(set(d[0]))
+    maxscore = max(d[3],maxscore)
+    minscore = min(d[1]+[minscore])
+    if r.unique_feat():
+      _unique[rname] = d
     else:
-      repeat[rname] = data
+      _repeat[rname] = d
 
-    if len(readnames) >= 1000:
-      break
+  # Rescale alignment scores
+  _ = samUtils.rescale_samscore(_unique, _repeat, maxscore, minscore)
+
+  # Restructure unique to contain only genome index and score
+  for rname in _unique.keys():
+    _unique[rname] = [_unique[rname][0][0], _unique[rname][1][0]]
+
+  # Normalize scores in repeat
+  for rname in _repeat.keys():
+    pScoreSum = sum(_repeat[rname][1])
+    _repeat[rname][2] = [k/pScoreSum for k in _repeat[rname][1]]
+
+  # Set genomes to integers
+  _genomes = list(gset)
+  gdict   = dict((v,i) for i,v in enumerate(_genomes))
+  for rname,data in _unique.iteritems():
+    data[0] = gdict[data[0]]
+
+  for rname,data in _repeat.iteritems():
+    data[0] = [gdict[g] for g in data[0]]
+
+  # Set readnames to integers
+  _reads = _unique.keys() + _repeat.keys()
+  for i,rn in enumerate(_reads):
+    if rn in _unique:
+      _unique[i] = _unique.pop(rn)
+    else:
+      _repeat[i] = _repeat.pop(rn)
+
+  return _unique, _repeat, _genomes, _reads
+
+def updated_alignments(psread,rdata,glookup,score_cutoff):
+  from pathoscope.pathorna.utils import phred
+
+  if len(rdata) == 2: # This is a uniquely mapped read
+    gname = glookup[rdata[0]]
+    pri_aln,alt_alns = psread.aligned_to_genome(gname)
+    pri_aln.set_tags('ZP','UP').set_tags('ZQ',255)     # Unique Primary
+    for a in alt_alns:
+      a.set_tags('ZP','UA').set_tags('ZQ',255)      # Unique Alternate
+    return [pri_aln] + alt_alns
+  else: # This is a non-uniquely mapped read
+    _updated = []
+    # Iterate over updated Pscores
+    for i,upPscore in enumerate(rdata[2]):
+      if upPscore > score_cutoff:
+        gname = glookup[rdata[0][i]]
+        pri_aln,alt_alns = psread.aligned_to_genome(gname)
+        level = 'H' if upPscore >= 0.5 else 'L'
+        pri_aln.set_tags('ZP','%sP' % level).set_tags('ZQ',phred(upPscore))
+        for a in alt_alns:
+          a.set_tags('ZP','%sA' % level).set_tags('ZQ',phred(upPscore))
+        _updated += [pri_aln] + alt_alns
+    return _updated
+
+def write_tsv_report(genomes, initial_guess, final_guess, initial_report, final_report, nreads, opts):
+  header1 = ['Total Number of Aligned Reads:', str(nreads), 'Total Number of Mapped Genomes:', str(len(genomes))]
+  header2 = ['Genome', 'Final Guess', 'Final Best Hit', 'Final Best Hit Read Numbers',
+             'Final High Confidence Hits', 'Final Low Confidence Hits', 'Initial Guess',
+             'Initial Best Hit', 'Initial Best Hit Read Numbers',
+             'Initial High Confidence Hits', 'Initial Low Confidence Hits']
+  # Ensure that the order in "report" is the same as "header2"
+  report = zip(genomes,
+               final_guess, final_report['bestHit'], final_report['bestHitReads'],
+               final_report['level1'], final_report['level2'],
+               initial_guess, initial_report['bestHit'], initial_report['bestHitReads'],
+               initial_report['level1'], initial_report['level2']
+              )
+
+  # Sort report by final_guess
+  report.sort(key=lambda x:x[1],reverse=True)
+
+  # Only include genomes where Final guess is >= score_cutoff or have final hits > 0
+  filtered = [r for r in report if r[1] >= opts.score_cutoff or r[4] > 0 or r[4] > 0]
+
+  with open(opts.generate_filename('report.tsv'),'w') as outh:
+    print >>outh, '\t'.join(header1)
+    print >>outh, '\t'.join(header2)
+    for r in filtered:
+      print >>outh, '\t'.join(str(_) for _ in r)
+
+
+
+def pathoscope_rna_reassign(opts):
+  import pysam
+  from pathoscope.pathorna.utils import FeatureLookup
+  from time import time
+
+  flookup = FeatureLookup(opts.gtf_file)
+  samfile = pysam.AlignmentFile(opts.ali_file)
+
+  if opts.verbose:
+    print >>sys.stderr, "Loading alignment file (%s)" % opts.ali_file
+    loadstart = time()
+
+  allreads = parse_reads(samfile, flookup)
+
+  if opts.verbose:
+    print >>sys.stderr, "Time to load alignment:".ljust(40) + "%d seconds" % (time() - loadstart)
+
+  U,NU,genomes,reads = data_matrix(allreads)
+
+  if False:
+    import copy
+    initU = copy.deepcopy(U)
+    initNU = copy.deepcopy(NU)
+
+  initial_report = wrap_computeBestHit(U, NU, genomes, reads)
+
+  if opts.verbose:
+    print >>sys.stderr, "EM iteration..."
+    print >>sys.stderr, "(Genomes,Reads)=%dx%d" % (len(genomes),len(reads))
+    print >>sys.stderr, "Delta Change:"
+    emtime = time()\
+
+  (initPi, pi, _, NU) = wrap_pathoscope_em(U, NU, genomes, opts)
+
+  if opts.verbose:
+    print >>sys.stderr, "Time for EM iteration:".ljust(40) +  "%d seconds" % (time() - emtime)
+
+  if opts.out_matrix:
+    with open(opts.generate_filename('genomeId.txt'),'w') as outh:
+      print >>outh, '\n'.join(genomes)
+    with open(opts.generate_filename('readId.txt'),'w') as outh:
+      print >>outh, '\n'.join(reads)
+    with open(opts.generate_filename('initGuess.txt'),'w') as outh:
+      for p,g in sorted(zip(initPi,genomes), key=lambda x:x[0], reverse=True):
+        print >>outh, '%.7g\t%s' % (p,g)
+    with open(opts.generate_filename('finGuess.txt'),'w') as outh:
+      for p,g in sorted(zip(pi,genomes), key=lambda x:x[0], reverse=True):
+        print >>outh, '%.7g\t%s' % (p,g)
+
+  final_report = wrap_computeBestHit(U, NU, genomes, reads)
+
+  write_tsv_report(genomes, initPi, pi, initial_report, final_report, len(reads), opts)
+
+  # Write the updated sam file
+  if not opts.no_updated_sam:
+    updated_samfile = pysam.AlignmentFile(opts.out_samfile,'wh',header=samfile.header)
+    glookup = dict(enumerate(genomes))
+    for ridx,rname in enumerate(reads):
+      rdata = U[ridx] if ridx in U else NU[ridx]
+      u_alns = updated_alignments(allreads[rname],rdata,glookup,opts.score_cutoff)
+      for aln in u_alns:
+        aln.write_samfile(updated_samfile)
 
   samfile.close()
-  return unique, repeat, genomes, readnames
-
-"""
-# ===========================================================
-def conv_align2GRmat(aliDfile,pScoreCutoff,aliFormat):
-	in1 = open(aliDfile,'r')
-	U = {}
-	NU = {}
-	h_readId = {}
-	h_refId = {}
-	genomes = []
-	read =[]
-	gCnt = 0
-	rCnt = 0
-
-	maxScore = None
-	minScore = None
-	for ln in in1:
-		if (ln[0] == '@' or ln[0] == '#'):
-			continue
-
-		l = ln.split('\t')
-		
-		readId=l[0]
-		if (aliFormat == 0 or aliFormat == 1): # gnu-sam or sam
-			if int(l[1])&0x4 == 4: # bitwise FLAG - 0x4 : segment unmapped
-				continue
-			refId=l[2]
-		elif (aliFormat == 2): # bl8
-			refId=l[1]
-		
-		if refId == '*':
-			continue
-		
-		#refId=refId.split("ti:")[-1]
-		mObj=re.search(r'ti\|(\d+)\|org\|([^|]+)\|gi',refId)
-		if mObj:
-			refId = "ti|"+mObj.group(1)+"|org|"+mObj.group(2)
-		else:
-			mObj=re.search(r'ti\|(\d+)\|gi',refId)
-			if mObj and mObj.group(1)!="-1":
-				refId = "ti|"+mObj.group(1)
-
-		(pScore, skipFlag) = find_entry_score(ln, l, aliFormat, pScoreCutoff)
-		if skipFlag:
-			continue
-		if ((maxScore == None) or (pScore > maxScore)):
-			maxScore = pScore
-		if ((minScore == None) or (pScore < minScore)):
-			minScore = pScore
-		
-		gIdx = h_refId.get(refId,-1)
-		if gIdx == -1:
-			gIdx = gCnt
-			h_refId[refId] = gIdx
-			genomes.append(refId)
-			gCnt += 1
-
-		rIdx = h_readId.get(readId,-1)
-		if rIdx == -1:
-			#hold on this new read
-			#first, wrap previous read profile and see if any previous read has a same profile with that!
-			rIdx = rCnt
-			h_readId[readId] = rIdx
-			read.append(readId)
-			rCnt += 1
-			U[rIdx] = [[gIdx], [pScore], [float(pScore)], pScore]
-		else:
-			if (rIdx in U):
-				if gIdx in U[rIdx][0]:
-					continue
-				NU[rIdx] = U[rIdx]
-				del U[rIdx]
-			if gIdx in NU[rIdx][0]:
-				continue
-			NU[rIdx][0].append(gIdx)
-			NU[rIdx][1].append(pScore)
-			if pScore > NU[rIdx][3]:
-				NU[rIdx][3] = pScore
-#			length = len(NU[rIdx][1])
-#			NU[rIdx][2] = [1.0/length]*length
-
-	in1.close()
-
-	if (aliFormat == 1): # sam
-		(U, NU) = samUtils.rescale_samscore(U, NU, maxScore, minScore)
-
-	del h_refId, h_readId
-	for rIdx in U:
-		U[rIdx] = [U[rIdx][0][0], U[rIdx][1][0]] #keep gIdx and score only
-	for rIdx in NU:
-		pScoreSum = sum(NU[rIdx][1])
-		NU[rIdx][2] = [k/pScoreSum for k in NU[rIdx][1]] #Normalizing pScore
-
-	return U, NU, genomes, read
-"""
-
-# ===========================================================
-# Entry function to PathoID
-# Does the reassignment and generates a tsv file report
-def pathoscope_reassign(pathoIdOptions):
-	out_matrix = pathoIdOptions.out_matrix_flag
-	verbose = pathoIdOptions.verbose
-	scoreCutoff = pathoIdOptions.score_cutoff
-	expTag = pathoIdOptions.exp_tag
-	ali_format = pathoIdOptions.ali_format
-	ali_file = pathoIdOptions.ali_file
-	outdir = pathoIdOptions.outdir
-	emEpsilon = pathoIdOptions.emEpsilon
-	maxIter = pathoIdOptions.maxIter
-	upalign = not(pathoIdOptions.noalign)
-	piPrior = pathoIdOptions.piPrior
-	thetaPrior = pathoIdOptions.thetaPrior
-	
-	if float(os.stat(ali_file).st_size)<1.0:
-		print 'the alignment file [%s] is empty.' % ali_file
-		sys.exit(1)
-
-	if ali_format == 'gnu-sam':
-		aliFormat = 0
-		if verbose:
-			print "parsing gnu-sam file/likelihood score/reads and mapped genomes..."
-	elif ali_format == 'sam': #standard sam
-		aliFormat = 1
-		if verbose:
-			print "parsing sam file/likelihood score/reads and mapped genomes..."
-	elif ali_format == 'bl8': #blat m8 format
-		aliFormat = 2
-		if verbose:
-			print "parsing bl8 file/likelihood score/reads and mapped genomes..."
-	else:
-		print "unknown alignment format file..."
-		return
-	(U, NU, genomes, reads) = conv_align2GRmat(ali_file,scoreCutoff,aliFormat)
-	
-	nG = len(genomes)
-	nR = len(reads)
-	if verbose:
-		print "EM iteration..."
-		print "(Genomes,Reads)=%dx%d" % (nG, nR)
-		print "Delta Change:"
-	
-	if out_matrix:
-		if verbose:
-			print "writing initial alignment ..."
-		out_initial_align_matrix(genomes, reads, U, NU, expTag, ali_file, outdir)	
-
-	(bestHitInitialReads, bestHitInitial, level1Initial, level2Initial) = \
-		PathoReportA.computeBestHit(U, NU, genomes, reads)
-	
-	(initPi, pi, _, NU) = pathoscope_em(U, NU, genomes, maxIter, emEpsilon, verbose,
-		piPrior, thetaPrior)
-	tmp = zip(initPi,genomes)
-	tmp = sorted(tmp,reverse=True) #similar to sort row
-	
-	if out_matrix:
-		initialGuess = outdir + os.sep + expTag + '-initGuess.txt'
-		oFp = open(initialGuess,'wb')
-		csv_writer = csv.writer(oFp, delimiter='\t')
-		csv_writer.writerows(tmp)
-		oFp.close()
-	
-	del tmp
-	
-	(bestHitFinalReads, bestHitFinal, level1Final, level2Final) = \
-		PathoReportA.computeBestHit(U, NU, genomes, reads)
-
-	if out_matrix:
-		finalGuess = outdir + os.sep + expTag + '-finGuess.txt'
-		oFp = open(finalGuess,'wb')
-		tmp = zip(pi,genomes)
-		tmp = sorted(tmp,reverse=True)
-		csv_writer = csv.writer(oFp, delimiter='\t')
-		csv_writer.writerows(tmp)
-		oFp.close()
-
-	finalReport = outdir + os.sep + expTag +'-'+ ali_format + '-report.tsv'
-	header = ['Genome', 'Final Guess', 'Final Best Hit', 'Final Best Hit Read Numbers', \
-		'Final High Confidence Hits', 'Final Low Confidence Hits', 'Initial Guess', \
-		'Initial Best Hit', 'Initial Best Hit Read Numbers', \
-		'Initial High Confidence Hits', 'Initial Low Confidence Hits']
-	(x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11) = PathoReportA.write_tsv_report(
-		finalReport, nR, nG, pi, genomes, initPi, bestHitInitial, bestHitInitialReads, 
-		bestHitFinal, bestHitFinalReads, level1Initial, level2Initial, level1Final, 
-		level2Final, header)
-	
-	reAlignfile = ali_file
-	if upalign:
-		reAlignfile = rewrite_align(U, NU, ali_file, scoreCutoff, aliFormat, outdir)
-
-	return (finalReport, x2, x3, x4, x5, x1, x6, x7, x8, x9, x10, x11, reAlignfile)
-
-
-# ===========================================================
-# This is the main EM algorithm
-# ===========================================================
-def pathoscope_em(U, NU, genomes, maxIter, emEpsilon, verbose, piPrior, thetaPrior):
-	G = len(genomes)
-
-	### Initial values
-	pi = [1./G for _ in genomes]
-	initPi = pi
-	theta = [1./G for _ in genomes]
-	
-	pisum0=[0 for _ in genomes]
-	Uweights = [U[i][1] for i in U] # weights for unique reads...
-	maxUweights = 0
-	Utotal = 0
-	if Uweights:
-		maxUweights = max(Uweights)
-		Utotal = sum(Uweights)
-	for i in U: 
-		pisum0[U[i][0]]+=U[i][1]
-	
-	#pisum0/Utotal would be the weighted proportions of unique reads assigned to each genome (weights are alignment scores)_. 
-	
-	#need to change the structure for U matrix
-	#notes NU weights are unnormalized
-	# pull out a weighted likelihood score
-	
-	### data structure
-	### 3 unique reads: 2 reads to genome1 and 1 read to genome4: readnum:[genome,reascore]
-	# U = {0: 0, 1: 0, 2: 3}
-	# U = {0: [0,1], 1: [0,.5], 2: [3,1]}
-	### non-unique reads: 3 total reads  readnum:[[genomes],[qij],[xij]]
-	#NU = {0: [[0, 2, 3], [0.4, 0.2, 0.4] , [0.33, 0.33, 0.33],.4, 1: [[0, 1], [0.6, 0.4] , [0.5,0.5]], 2: [[1, 3], [0.5, 0.5] , [0.5,0.5]]}
-	### Genome hash
-	#genomes = {0:"ecoli", 1:"strep", 2:"anthrax", 3:"plague"}
-	#NUweights = [max(NU[i][1]) for i in NU] # weights for non-unique reads...
-	NUweights = [NU[i][3] for i in NU] # weights for non-unique reads...
-	maxNUweights = 0
-	NUtotal = 0
-	if NUweights:
-		maxNUweights = max(NUweights)
-		NUtotal = sum(NUweights)
-	priorWeight = max(maxUweights, maxNUweights)
-	lenNU=len(NU)
-	if lenNU==0:
-		lenNU=1
-
-	for i in range(maxIter):  ## EM iterations--change to convergence 
-		pi_old = pi
-		thetasum=[0 for k in genomes]
-		
-		# E Step 
-
-		for j in NU: #for each non-uniq read, j
-			z = NU[j] 
-			ind = z[0] #a set of any genome mapping with j
-			pitmp = [pi[k] for k in ind]			### get relevant pis for the read
-			thetatmp = [theta[k] for k in ind]  	### get relevant thetas for the read
-			xtmp = [1.*pitmp[k]*thetatmp[k]*z[1][k] for k in range(len(ind))]  ### Calculate unormalized xs
-			xsum = sum(xtmp)
-			if xsum == 0:
-				xnorm = [0.0 for k in xtmp]  		### Avoiding dividing by 0 at all times
-			else:
-				xnorm = [1.*k/xsum for k in xtmp]  	### Normalize new xs
-			
-			NU[j][2] = xnorm     					## Update x in NU 
-			
-			for k in range(len(ind)):
-				#thetasum[ind[k]] += xnorm[k]   		### Keep running tally for theta
-				thetasum[ind[k]] += xnorm[k]*NU[j][3]   ### Keep weighted running tally for theta
-					
-		# M step	
-		pisum = [thetasum[k]+pisum0[k] for k in range(len(thetasum))]   ### calculate tally for pi
-		pip = piPrior*priorWeight # pi prior - may be updated later
-		#pi = [(1.*k+pip)/(len(U)+len(NU)+pip*len(pisum)) for k in pisum]  		## update pi
-		#pi = [1.*k/G for k in pisum]  		## update pi
-		totaldiv = Utotal+NUtotal
-		if totaldiv==0:
-			totaldiv=1
-		pi = [(1.*k+pip)/(Utotal+NUtotal+pip*len(pisum)) for k in pisum]  		## update pi
-		if (i == 0):
-			initPi = pi
-		
-		thetap = thetaPrior*priorWeight # theta prior - may be updated later
-		NUtotaldiv = NUtotal
-		if NUtotaldiv==0:
-			NUtotaldiv=1
-		theta = [(1.*k+thetap)/(NUtotaldiv+thetap*len(thetasum)) for k in thetasum]
-		#theta = [(1.*k+thetap)/(lenNU+thetap*len(thetasum)) for k in thetasum]
-
-		cutoff = 0.0
-		for k in range(len(pi)):
-			cutoff += abs(pi_old[k]-pi[k])
-		if verbose:
-			print "[%d]%g" % (i,cutoff)
-		if (cutoff <= emEpsilon or lenNU==1):
-			break
-
-	return initPi, pi, theta, NU
-
-def out_initial_align_matrix(ref, read, U, NU, expTag, ali_file, outdir):
-	genomeId = outdir + os.sep + expTag + '-genomeId.txt'
-	oFp = open(genomeId,'wb')
-	csv_writer = csv.writer(oFp, delimiter='\n')
-	csv_writer.writerows([ref])
-	oFp.close()
-
-	readId = outdir + os.sep + expTag + '-readId.txt'
-	oFp = open(readId,'wb')
-	csv_writer = csv.writer(oFp, delimiter='\n')
-	csv_writer.writerows([read])
-	oFp.close()
-	
-# ===========================================================
-# Generates the updated alignment file with the updated score
-def rewrite_align(U, NU, aliDfile, pScoreCutoff, aliFormat, outdir):
-	pathoUtilsA.ensure_dir(outdir)
-	f = os.path.basename(aliDfile)
-	reAlignfile = outdir + os.sep + 'updated_' + f
-	
-	with open(reAlignfile,'w') as of:
-		with open(aliDfile,'r') as in1:
-			h_readId = {}
-			h_refId = {}
-			genomes = []
-			read =[]
-			gCnt = 0
-			rCnt = 0
-		
-			mxBitSc = 700
-			sigma2 = 3
-			for ln in in1:
-				if (ln[0] == '@' or ln[0] == '#'):
-					of.write(ln)
-					continue
-		
-				l = ln.split('\t')
-				
-				readId=l[0]
-				if (aliFormat == 0 or aliFormat == 1): # gnu-sam or sam
-					#refId=l[2].split("ti:")[-1]
-					refId=l[2]
-					if int(l[1])&0x4 == 4: # bitwise FLAG - 0x4 : segment unmapped
-						continue
-				elif (aliFormat == 2): # bl8
-					refId=l[1]
-				
-				if refId == '*':
-					continue
-
-				mObj=re.search(r'ti\|(\d+)\|org\|([^|]+)\|gi',refId)
-				if mObj:
-					refId = "ti|"+mObj.group(1)+"|org|"+mObj.group(2)
-				else:
-					mObj=re.search(r'ti\|(\d+)\|gi',refId)
-					if mObj and mObj.group(1)!="-1":
-						refId = "ti|"+mObj.group(1)
-				
-				(_, skipFlag) = find_entry_score(ln, l, aliFormat, pScoreCutoff)
-				if skipFlag:
-					continue
-				
-				gIdx = h_refId.get(refId,-1)
-				if gIdx == -1:
-					gIdx = gCnt
-					h_refId[refId] = gIdx
-					genomes.append(refId)
-					gCnt += 1
-		
-				rIdx = h_readId.get(readId,-1)
-				if rIdx == -1:
-					#hold on this new read
-					#first, wrap previous read profile and see if any previous read has a same profile with that!
-					rIdx = rCnt
-					h_readId[readId] = rIdx
-					read.append(readId)
-					rCnt += 1
-					if rIdx in U:
-						of.write(ln)
-						continue
-							
-				if rIdx in NU:
-					if (aliFormat == 0): # gnu-sam
-						scoreComponents = l[12].split(':')
-						(upPscore, pscoreSum) = find_updated_score(NU, rIdx, gIdx)
-						scoreComponents[2] = str(upPscore*pscoreSum)
-						if (scoreComponents[2] < pScoreCutoff):
-							continue
-						l[12] = ':'.join(scoreComponents)
-						ln = '\t'.join(l)
-						of.write(ln)
-					elif (aliFormat == 1): # sam
-						(upPscore, pscoreSum) = find_updated_score(NU, rIdx, gIdx)
-						if (upPscore < pScoreCutoff):
-							continue
-						if (upPscore >= 1.0):
-							upPscore = 0.999999
-						mapq2 = math.log10(1 - upPscore)
-						l[4] = str(int(round(-10.0*mapq2)))
-						ln = '\t'.join(l)
-						of.write(ln)
-					elif (aliFormat == 2): # bl8
-						(upPscore, pscoreSum) = find_updated_score(NU, rIdx, gIdx)
-						score = upPscore*pscoreSum
-						if score <= 0.0:
-							continue
-						bitSc = math.log(score)
-						if bitSc > mxBitSc:
-							bitSc = mxBitSc
-						l[10] = str(bitSc*sigma2)
-						ln = '\t'.join(l)
-						of.write(ln)
-
-	return reAlignfile
-
-# ===========================================================
-# Function to find the updated score after pathoscope reassignment
-def find_updated_score(NU, rIdx, gIdx):
-	index = NU[rIdx][0].index(gIdx);
-	pscoreSum = 0.0
-	for pscore in NU[rIdx][1]:
-		pscoreSum += pscore
-	pscoreSum /= 100
-	upPscore = NU[rIdx][2][index]
-	return (upPscore, pscoreSum)
-
-# ===========================================================
-# Internal function to calculate the score from the alignment file entries
-def find_entry_score(ln, l, aliFormat, pScoreCutoff):
-	mxBitSc = 700
-	sigma2 = 3
-	skipFlag = False
-	if (aliFormat == 0): # gnu-sam
-		pScore = float(l[12].split(':')[2])
-		if (pScore < pScoreCutoff):
-			skipFlag = True
-	elif (aliFormat == 1): # sam
-		pScore = samUtils.findSamAlignScore(l)
-		if pScore is None:
-			mapq = float(l[4])
-			mapq2 = mapq/(-10.0)
-			pScore = 1.0 - pow(10,mapq2)
-			if (pScore < pScoreCutoff):
-				skipFlag = True
-	elif (aliFormat == 2): # bl8
-		eVal = float(l[10])
-		if (eVal > pScoreCutoff):
-			skipFlag = True
-		bitSc = float(l[11])/sigma2
-		if bitSc > mxBitSc:
-			bitSc = mxBitSc
-		pScore = math.exp(bitSc)
-	#pScore = int(round(pScore*100)) # Converting to integer to conserve memory space
-	#if pScore < 1:
-	#	skipFlag = true
-	return (pScore, skipFlag)
-
-
+  if not opts.no_updated_sam: updated_samfile.close()
+  return
