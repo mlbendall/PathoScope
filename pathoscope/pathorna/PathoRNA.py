@@ -48,6 +48,7 @@ class PathoRNAOptions:
     self.out_samfile     = None
     self.ali_file        = os.path.abspath(alnfile)
     self.gtf_file        = os.path.abspath(gtffile)
+    self.no_feature_key  = '__nofeature__'
 
     # Set any other options passed in kwargs
     for k,v in kwargs.iteritems():
@@ -166,7 +167,7 @@ def updated_alignments(psread,rdata,glookup,score_cutoff):
     for a in alt_alns:
       a.set_tags('ZP','UA').set_tags('ZQ',255)      # Unique Alternate
     return [pri_aln] + alt_alns
-  else: # This is a non-uniquely mapped read
+  else:               # This is a non-uniquely mapped read
     _updated = []
     # Iterate over updated Pscores
     for i,upPscore in enumerate(rdata[2]):
@@ -180,13 +181,13 @@ def updated_alignments(psread,rdata,glookup,score_cutoff):
         _updated += [pri_aln] + alt_alns
     return _updated
 
-def write_tsv_report(genomes, initial_guess, final_guess, initial_report, final_report, nreads, opts):
+def write_tsv_report(genomes, initial_guess, final_guess, initial_report, final_report, nreads, opts, reportAll=True):
   header1 = ['Total Number of Aligned Reads:', str(nreads), 'Total Number of Mapped Genomes:', str(len(genomes))]
   header2 = ['Genome', 'Final Guess', 'Final Best Hit', 'Final Best Hit Read Numbers',
              'Final High Confidence Hits', 'Final Low Confidence Hits', 'Initial Guess',
              'Initial Best Hit', 'Initial Best Hit Read Numbers',
              'Initial High Confidence Hits', 'Initial Low Confidence Hits']
-  # Ensure that the order in "report" is the same as "header2"
+  # The order in "report" must be the same as in "header2"
   report = zip(genomes,
                final_guess, final_report['bestHit'], final_report['bestHitReads'],
                final_report['level1'], final_report['level2'],
@@ -198,20 +199,93 @@ def write_tsv_report(genomes, initial_guess, final_guess, initial_report, final_
   report.sort(key=lambda x:x[1],reverse=True)
 
   # Only include genomes where Final guess is >= score_cutoff or have final hits > 0
-  filtered = [r for r in report if r[1] >= opts.score_cutoff or r[4] > 0 or r[4] > 0]
+  if not reportAll:
+    report = [r for r in report if r[1] >= opts.score_cutoff or r[4] > 0 or r[5] > 0]
 
   with open(opts.generate_filename('report.tsv'),'w') as outh:
     print >>outh, '\t'.join(header1)
     print >>outh, '\t'.join(header2)
-    for r in filtered:
+    for r in report:
       print >>outh, '\t'.join(str(_) for _ in r)
 
+def write_abundance_report(genomes, initial_guess, final_guess, initial_report, final_report, nreads, opts,
+                           genome_lengths, avg_read_len, reportAll=True):
+  '''
 
+  :param genomes:
+  :param initial_guess:
+  :param final_guess:
+  :param initial_report:
+  :param final_report:
+  :param nreads:
+  :param opts:
+  :param genome_lengths:
+  :param avg_read_len:
+  :param reportAll:
+  :return:
+  '''
+  init_rpkm  = calculate_rpkm(genomes, genome_lengths, initial_report['bestHitReads'],nreads)
+  init_tpm   = calculate_tpm(genomes, genome_lengths, initial_report['bestHitReads'], avg_read_len)
+  final_rpkm = calculate_rpkm(genomes, genome_lengths, final_report['bestHitReads'],nreads)
+  final_tpm  = calculate_tpm(genomes, genome_lengths, final_report['bestHitReads'], avg_read_len)
+  glen_list  = [genome_lengths[g] for g in genomes]
+  header1 = ['Total Number of Aligned Reads:', str(nreads), 'Total Number of Mapped Genomes:', str(len(genomes))]
+  header2 = ['Genome', 'Length',
+             'Final Best Hit Read Numbers',
+             'Final RPKM','Final TPM',
+             'Initial Best Hit Read Numbers',
+             'Initial RPKM','Initial TPM',
+             'Final Guess', 'Final Best Hit', 'Final High Confidence Hits', 'Final Low Confidence Hits',
+             'Initial Guess','Initial Best Hit', 'Initial High Confidence Hits', 'Initial Low Confidence Hits',
+             ]
+  # The order in "report" must be the same as in "header2"
+  report = zip(genomes, glen_list,
+               final_report['bestHitReads'],
+               final_rpkm, final_tpm,
+               initial_report['bestHitReads'],
+               init_rpkm, init_tpm,
+               final_guess, final_report['bestHit'], final_report['level1'], final_report['level2'],
+               initial_guess, initial_report['bestHit'], initial_report['level1'], initial_report['level2'],
+              )
+
+  # Sort report by final_rpkm
+  report.sort(key=lambda x:x[3],reverse=True)
+
+  # Optional filtering of genomes
+  if not reportAll:
+    pass # filtered = [r for r in report if r[8] >= opts.score_cutoff or r[10] > 0 or r[11] > 0]
+
+  with open(opts.generate_filename('abundance.tsv'),'w') as outh:
+    print >>outh, '\t'.join(header1)
+    print >>outh, '\t'.join(header2)
+    for r in report:
+      print >>outh, '\t'.join(str(_) for _ in r)
+
+def average_read_length(rdict,rlist):
+  numer = sum(max(a.query_length for a in rdict[r].alignments) for r in rlist)
+  return int(round(float(numer) / len(rlist)))
+
+def calculate_rpkm(features, feat_len, counts, nreads):
+  rpkms = []
+  for f,rc in zip(features,counts):
+    rpkm = (rc * 1e9) / (feat_len[f] * nreads)
+    rpkms.append(rpkm)
+  return rpkms
+
+def calculate_tpm(features, feat_len, counts, r_l):
+  T = sum(((rc * r_l) / feat_len[f]) for f,rc in zip(features,counts))
+  tpms = []
+  for f,rc in zip(features,counts):
+    tpm = (rc * r_l * 1e6) / (feat_len[f] * T)
+    tpms.append(tpm)
+  return tpms
 
 def pathoscope_rna_reassign(opts):
   import pysam
   from pathoscope.pathorna.utils import FeatureLookup
   from time import time
+
+  PSRead.nofeature = opts.no_feature_key
 
   flookup = FeatureLookup(opts.gtf_file)
   samfile = pysam.AlignmentFile(opts.ali_file)
@@ -260,6 +334,17 @@ def pathoscope_rna_reassign(opts):
   final_report = wrap_computeBestHit(U, NU, genomes, reads)
 
   write_tsv_report(genomes, initPi, pi, initial_report, final_report, len(reads), opts)
+
+  # Calculate abundance measures
+  feature_lengths = flookup.feature_length()
+  # Add feature length for the no feature
+  nofeat_length = sum(samfile.lengths) - sum(feature_lengths.values())
+  feature_lengths[opts.no_feature_key] = nofeat_length
+  # Calculate average read length
+  avg_rlen = average_read_length(allreads,reads)
+
+  # abundance_list = calculate_abundance(genomes, feature_lengths, final_report['bestHitReads'], len(reads), avg_rlen)
+  write_abundance_report(genomes, initPi, pi, initial_report, final_report, len(reads), opts, feature_lengths, avg_rlen)
 
   # Write the updated sam file
   if not opts.no_updated_sam:

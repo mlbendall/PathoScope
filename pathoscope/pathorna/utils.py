@@ -6,7 +6,7 @@ from collections import defaultdict
 import re
 
 
-NO_FEATURE_KEY = '__nofeature__'
+# NO_FEATURE_KEY = '__nofeature__'
 
 def phred(f):
   return int(round(-10 * math.log10(1 - f))) if f < 1.0 else 255
@@ -28,6 +28,14 @@ def iterread(samfile):
       current = aln.query_name
   yield current,ralns
 
+class Feature:
+  def __init__(self, name, chrom, spos, epos, strand=None):
+    self.name  = name
+    self.chrom = chrom
+    self.spos = spos
+    self.epos = epos
+    self.strand = strand
+    self.length = epos - spos
 
 class FeatureLookup:
   def __init__(self,gtffile,attr_name="locus"):
@@ -73,6 +81,13 @@ class FeatureLookup:
         return featL
       else:
         assert False, "Ends do not agree"
+
+  def feature_length(self):
+    _ret = {}
+    for chr,ilist in self._gdict.iteritems():
+      for spos,epos,locus_idx in ilist:
+        _ret[self._locus[locus_idx]] = epos-spos
+    return _ret
 
   def feature_name(self,id):
     return self._locus[id]
@@ -136,7 +151,7 @@ class PSRead:
   """
   All alignments for one read
   """
-  nofeature = NO_FEATURE_KEY
+  nofeature = '__nofeature__' # None
   def __init__(self,readname,segs):
     self.readname = readname
     if segs[0].is_proper_pair:
