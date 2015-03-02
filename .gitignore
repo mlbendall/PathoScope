@@ -10,3 +10,5 @@ data/
 # Ignore workspace files
 workspace*.py
 
+# Ignore OSX files
+.DS_Store
