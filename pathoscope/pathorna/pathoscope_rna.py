@@ -2,14 +2,6 @@
 
 __author__ = 'bendall'
 
-#!/usr/bin/env python
-# Initial author: Solaiappan Manimaran
-# Gets alignment file (currently support sam or BLAST-m8 format (.bl8)) and runs EM algorithm.
-# Outputs the pathogens rank in the sample as a report that can be opened in Excel.
-# Optionally outputs an updated alignment file (sam/bl8)
-
-#usage information: pathoscope.py -h
-
 #	Pathoscope - Predicts strains of genomes in Nextgen seq alignment file (sam/bl8)
 #	Copyright (C) 2013  Johnson Lab - Boston University
 #
@@ -53,20 +45,52 @@ def main(parser):
 
 if __name__=='__main__':
   import argparse
-  parser = argparse.ArgumentParser(description="Pathoscope RNA")
-  parser.add_argument('--verbose', action='store_true', help='Prints verbose text while running')
-  parser.add_argument('--score_cutoff', type=float, default=0.01, help='Minimum final probability score for alignment')
-  parser.add_argument('--out_matrix', action='store_true', dest='out_matrix', help='Output alignment matrix')
-  parser.add_argument('--no_updated_sam', action='store_true', dest='no_updated_sam', help='Do not generate an updated alignment file')
-  parser.add_argument('--emEpsilon', type=float, default=1e-7, help='EM Algorithm Epsilon cutoff')
-  parser.add_argument('--maxIter', type=int, default=50, help='EM Algorithm maximum iterations')
-  parser.add_argument('--piPrior', type=int, default=0, help='prior on pi')
-  parser.add_argument('--thetaPrior', type=int, default=0, help='prior on theta')
-  parser.add_argument('--exp_tag', default="pathorna", help='Experiment tag')
-  parser.add_argument('--outdir', default=".", help='Output Directory')
-  parser.add_argument('--version', action='version', version='%(prog)s 1.0')
-  parser.add_argument('--ali_format', default='sam', help='Alignment Format: sam')
-  parser.add_argument('--out_samfile', help='Name for updated alignment file')
-  parser.add_argument('samfile', help='Alignment file path')
-  parser.add_argument('gtffile', help='Annotation file (GTF format)')
+  parser = argparse.ArgumentParser(prog="pathoscope_rna.py",
+                                   description="Pathoscope RNA",
+                                   formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+                                  )
+  parser.add_argument('-v','--version', action='version', version='%(prog)s 0.9b')
+
+  inputopts = parser.add_argument_group('input', 'Input options')
+  inputopts.add_argument('--ali_format', default='sam', help='Alignment Format. Only sam is supported.')
+  inputopts.add_argument('samfile', help='Path to alignment file')
+  inputopts.add_argument('gtffile', help='Path to annotation file (GTF format)')
+  inputopts.add_argument('--no_feature_key',
+                         help='Feature name for unassigned reads. Must not match any other feature name')
+
+  outputopts = parser.add_argument_group('output', 'Output options')
+  outputopts.add_argument('--verbose', action='store_true',
+                          help='Prints verbose text while running')
+  outputopts.add_argument('--outdir', default=".",
+                          help='Output Directory')
+  outputopts.add_argument('--out_samfile',
+                          help='Name for updated alignment file')
+  outputopts.add_argument('--exp_tag', default="pathorna",
+                          help='Experiment tag')
+  outputopts.add_argument('--report_all', action='store_true',
+                          help='Include all genomes in report')
+  outputopts.add_argument('--min_final_guess', type=float, default=0.01,
+                          help='Minimum final guess for genome to appear in report. Genomes with one or more final hits will always be included.')
+  outputopts.add_argument('--out_matrix', action='store_true',
+                          help='Output alignment matrix')
+  outputopts.add_argument('--out_abundance', action='store_true',
+                          help='Output abundances (FPKM, TPI)')
+  outputopts.add_argument('--no_updated_sam', action='store_true', dest='no_updated_sam',
+                          help='Do not generate an updated alignment file')
+
+  modelopts = parser.add_argument_group('model', 'Model parameters')
+  modelopts.add_argument('--piPrior', type=int, default=0,
+                         help='Pi Prior equivalent to adding n unique reads')
+  modelopts.add_argument('--thetaPrior', type=int, default=0,
+                         help='Theta Prior equivalent to adding n non-unique reads')
+  modelopts.add_argument('--score_cutoff', type=float, default=0.01,
+                         help='Minimum final probability score for alignment')
+
+  emopts = parser.add_argument_group('em', 'EM parameters')
+  emopts.add_argument('--emEpsilon', type=float, default=1e-7,
+                      help='EM Algorithm Epsilon cutoff')
+  emopts.add_argument('--maxIter', type=int, default=100,
+                      help='EM Algorithm maximum iterations')
+
+  #  parser.add_argument('--out_samfile', help='Name for updated alignment file')
   main(parser)

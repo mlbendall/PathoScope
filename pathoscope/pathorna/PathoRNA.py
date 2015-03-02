@@ -33,22 +33,31 @@ class PathoRNAOptions:
                    'exp_tag','outdir','ali_format','ali_file','gtf_file', 'out_samfile']
 
   def __init__(self,alnfile,gtffile,**kwargs):
-    # Default option values
-    self.verbose         = False
-    self.score_cutoff    = 0.01
-    self.out_matrix      = False
-    self.no_updated_sam  = False
-    self.emEpsilon       = 1e-7
-    self.maxIter         = 50
-    self.piPrior         = 0
-    self.thetaPrior      = 0
-    self.exp_tag         = 'pathorna'
-    self.outdir          = '.'
+    # Input options
     self.ali_format      = 'sam'
-    self.out_samfile     = None
     self.ali_file        = os.path.abspath(alnfile)
     self.gtf_file        = os.path.abspath(gtffile)
     self.no_feature_key  = '__nofeature__'
+
+    # Output options
+    self.verbose         = False
+    self.outdir          = '.'
+    self.out_samfile     = None
+    self.exp_tag         = 'pathorna'
+    self.report_all      = False
+    self.min_final_guess = 0.01
+    self.out_matrix      = False
+    self.out_abundance   = False
+    self.no_updated_sam  = False
+
+    # Model parameters
+    self.piPrior         = 0
+    self.thetaPrior      = 0
+    self.score_cutoff    = 0.01
+
+    # EM parameters
+    self.emEpsilon       = 1e-7
+    self.maxIter         = 100
 
     # Set any other options passed in kwargs
     for k,v in kwargs.iteritems():
@@ -60,17 +69,6 @@ class PathoRNAOptions:
 
     if self.out_samfile is None:
       self.out_samfile = self.generate_filename('updated.sam')
-
-    """
-    # If outfile was not specified, set path for outfile
-    if self.out_samfile is None:
-      basename = os.path.split(self.ali_file)[1]
-      fn,ext = os.path.splitext(basename)
-      if ext == '.sam':
-        self.out_samfile = os.path.join(self.outdir,'%s.updated.sam' % fn)
-      else:
-        self.out_samfile = os.path.join(self.outdir,'%s.updated.sam' % fn)
-    """
 
   def generate_filename(self,suffix):
     basename = '%s-%s-%s' % (self.exp_tag, self.ali_format, suffix)
@@ -104,7 +102,6 @@ def parse_reads(samfile, flookup):
     allreads[rname] = PSRead(rname,segments)
     allreads[rname].assign_feats(refnames, flookup)
     allreads[rname].assign_best()
-    # if len(allreads) >= 2000: break
 
   return allreads
 
@@ -163,25 +160,34 @@ def updated_alignments(psread,rdata,glookup,score_cutoff):
   if len(rdata) == 2: # This is a uniquely mapped read
     gname = glookup[rdata[0]]
     pri_aln,alt_alns = psread.aligned_to_genome(gname)
-    pri_aln.set_tags('ZP','UP').set_tags('ZQ',255)     # Unique Primary
+    # Unique Primary, set mapq to 255
+    pri_aln.set_tags('ZP','UP').set_tags('ZQ',255).set_mapq(255)
     for a in alt_alns:
-      a.set_tags('ZP','UA').set_tags('ZQ',255)      # Unique Alternate
+      # Unique Alternate, set mapq to 0
+      a.set_tags('ZP','UA').set_tags('ZQ',0).set_mapq(0)
     return [pri_aln] + alt_alns
   else:               # This is a non-uniquely mapped read
     _updated = []
+    top_pscore = max(rdata[2])
+    top_genome = [glookup[rdata[0][i]] for i,s in enumerate(rdata[2]) if s==top_pscore]
+    if len(top_genome)==1:
+      top_genome = top_genome[0]
+    else:
+      top_genome = 'MULT'
+
     # Iterate over updated Pscores
     for i,upPscore in enumerate(rdata[2]):
       if upPscore > score_cutoff:
         gname = glookup[rdata[0][i]]
         pri_aln,alt_alns = psread.aligned_to_genome(gname)
         level = 'H' if upPscore >= 0.5 else 'L'
-        pri_aln.set_tags('ZP','%sP' % level).set_tags('ZQ',phred(upPscore))
+        pri_aln.set_tags('ZP','%sP' % level).set_tags('ZQ',phred(upPscore)).set_mapq(phred(upPscore)).set_tags('ZG',top_genome)
         for a in alt_alns:
-          a.set_tags('ZP','%sA' % level).set_tags('ZQ',phred(upPscore))
+          a.set_tags('ZP','%sA' % level).set_tags('ZQ',phred(upPscore)).set_mapq(phred(upPscore)).set_tags('ZG',top_genome)
         _updated += [pri_aln] + alt_alns
     return _updated
 
-def write_tsv_report(genomes, initial_guess, final_guess, initial_report, final_report, nreads, opts, reportAll=True):
+def write_tsv_report(genomes, initial_guess, final_guess, initial_report, final_report, nreads, opts):
   header1 = ['Total Number of Aligned Reads:', str(nreads), 'Total Number of Mapped Genomes:', str(len(genomes))]
   header2 = ['Genome', 'Final Guess', 'Final Best Hit', 'Final Best Hit Read Numbers',
              'Final High Confidence Hits', 'Final Low Confidence Hits', 'Initial Guess',
@@ -198,9 +204,9 @@ def write_tsv_report(genomes, initial_guess, final_guess, initial_report, final_
   # Sort report by final_guess
   report.sort(key=lambda x:x[1],reverse=True)
 
-  # Only include genomes where Final guess is >= score_cutoff or have final hits > 0
-  if not reportAll:
-    report = [r for r in report if r[1] >= opts.score_cutoff or r[4] > 0 or r[5] > 0]
+  # Only include genomes where Final guess is >= min_final_guess or have final hits > 0
+  if not opts.report_all:
+    report = [r for r in report if r[1] >= opts.min_final_guess or r[4] > 0 or r[5] > 0]
 
   with open(opts.generate_filename('report.tsv'),'w') as outh:
     print >>outh, '\t'.join(header1)
@@ -209,7 +215,7 @@ def write_tsv_report(genomes, initial_guess, final_guess, initial_report, final_
       print >>outh, '\t'.join(str(_) for _ in r)
 
 def write_abundance_report(genomes, initial_guess, final_guess, initial_report, final_report, nreads, opts,
-                           genome_lengths, avg_read_len, reportAll=True):
+                           genome_lengths, avg_read_len):
   '''
 
   :param genomes:
@@ -252,8 +258,8 @@ def write_abundance_report(genomes, initial_guess, final_guess, initial_report, 
   report.sort(key=lambda x:x[3],reverse=True)
 
   # Optional filtering of genomes
-  if not reportAll:
-    pass # filtered = [r for r in report if r[8] >= opts.score_cutoff or r[10] > 0 or r[11] > 0]
+  #if not reportAll:
+  #  pass # filtered = [r for r in report if r[8] >= opts.score_cutoff or r[10] > 0 or r[11] > 0]
 
   with open(opts.generate_filename('abundance.tsv'),'w') as outh:
     print >>outh, '\t'.join(header1)
@@ -301,7 +307,7 @@ def pathoscope_rna_reassign(opts):
 
   U,NU,genomes,reads = data_matrix(allreads)
 
-  if False:
+  if False: # Make a deep copy of the unique and non-unique data structures
     import copy
     initU = copy.deepcopy(U)
     initNU = copy.deepcopy(NU)
@@ -312,7 +318,7 @@ def pathoscope_rna_reassign(opts):
     print >>sys.stderr, "EM iteration..."
     print >>sys.stderr, "(Genomes,Reads)=%dx%d" % (len(genomes),len(reads))
     print >>sys.stderr, "Delta Change:"
-    emtime = time()\
+    emtime = time()
 
   (initPi, pi, _, NU) = wrap_pathoscope_em(U, NU, genomes, opts)
 
@@ -335,21 +341,20 @@ def pathoscope_rna_reassign(opts):
 
   write_tsv_report(genomes, initPi, pi, initial_report, final_report, len(reads), opts)
 
-  # Calculate abundance measures
-  feature_lengths = flookup.feature_length()
-  # Add feature length for the no feature
-  nofeat_length = sum(samfile.lengths) - sum(feature_lengths.values())
-  feature_lengths[opts.no_feature_key] = nofeat_length
-  # Calculate average read length
-  avg_rlen = average_read_length(allreads,reads)
-
-  # abundance_list = calculate_abundance(genomes, feature_lengths, final_report['bestHitReads'], len(reads), avg_rlen)
-  write_abundance_report(genomes, initPi, pi, initial_report, final_report, len(reads), opts, feature_lengths, avg_rlen)
+  if opts.out_abundance: # Output abundance measures
+    feature_lengths = flookup.feature_length()
+    # Calculate the length of the "no feature"
+    # nofeat_length = sum(samfile.lengths) - sum(feature_lengths.values())
+    feature_lengths[opts.no_feature_key] = sum(samfile.lengths) - sum(feature_lengths.values()) #nofeat_length
+    # Calculate average read length
+    avg_rlen = average_read_length(allreads,reads)
+    # abundance_list = calculate_abundance(genomes, feature_lengths, final_report['bestHitReads'], len(reads), avg_rlen)
+    write_abundance_report(genomes, initPi, pi, initial_report, final_report, len(reads), opts, feature_lengths, avg_rlen)
 
   # Write the updated sam file
   if not opts.no_updated_sam:
-    updated_samfile = pysam.AlignmentFile(opts.out_samfile,'wh',header=samfile.header)
-    glookup = dict(enumerate(genomes))
+    updated_samfile = pysam.AlignmentFile(opts.out_samfile, 'wh', header=samfile.header)
+    glookup = dict(enumerate(genomes)) # Lookup genome name by index
     for ridx,rname in enumerate(reads):
       rdata = U[ridx] if ridx in U else NU[ridx]
       u_alns = updated_alignments(allreads[rname],rdata,glookup,opts.score_cutoff)
