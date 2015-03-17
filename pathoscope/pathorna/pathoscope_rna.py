@@ -31,8 +31,8 @@ def main(parser):
   adict = vars(args)
   annotation_file = adict.pop('gtffile')
   alignment_file  = adict.pop('samfile')
-  assert os.path.exists(annotation_file) and os.path.isfile(annotation_file), 'ERROR: invalid annotation file [%s]' % annotation_file
-  assert os.path.exists(alignment_file) and os.path.isfile(alignment_file), 'ERROR: invalid alignment file [%s]' % alignment_file
+  assert os.path.exists(annotation_file) and os.path.isfile(annotation_file), 'ERROR: annotation file [%s] does not exist' % annotation_file
+  assert os.path.exists(alignment_file) and os.path.isfile(alignment_file), 'ERROR: alignment file [%s] does not exist' % alignment_file
   opts = PathoRNA.PathoRNAOptions(alignment_file, annotation_file, **adict)
   if opts.verbose:
     print >>sys.stderr, opts

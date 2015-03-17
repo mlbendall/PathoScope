@@ -37,17 +37,22 @@ def c2str(rgb):
   return '%d,%d,%d' % rgb
 
 def tag_color(psread):
+  """ Set the YC tag (Viewers use this for the color)
+  :param psread:
+  :return:
+  """
   if psread.is_unmapped:
     return
   if psread.is_unique:
     _ = psread.alignments[0].set_tags('YC', c2str(PALETTE['vermillion']))
   else:
-    bestAS = max(a.AS for a in psread.alignments)
+    # bestAS   = max(a.AS for a in psread.alignments)
+    # num_best =
     for a in psread.alignments:
-      if a.AS == bestAS:
+      if a.AS == psread.bestAS:
         _ = a.set_tags('YC', c2str(PALETTE['bluish_green']))
       else:
-        pct = float(a.AS) / bestAS
+        pct = float(a.AS) / psread.bestAS
         cat = int(pct*4)
         _ = a.set_tags('YC', c2str(blues[cat]))
 
@@ -55,13 +60,13 @@ def tag_nonunique(psread,has_features=True):
   if psread.is_unmapped or psread.is_unique:
     return
   else:
-    bestAS    = max(a.AS for a in psread.alignments)
-    num_best  = sum(a.AS==bestAS for a in psread.alignments)
+    # bestAS    = max(a.AS for a in psread.alignments)
+    num_best  = sum(a.AS==psread.bestAS for a in psread.alignments)
     if has_features:
-      bestfeats = set([f for a,f in zip(psread.alignments, psread.features) if a.AS == bestAS])
+      bestfeats = set([f for a,f in zip(psread.alignments, psread.features) if a.AS == psread.bestAS])
       bestfeat_str = ','.join(sorted(bestfeats))
     for a in psread.alignments:
-      _ = a.set_tags('ZN',len(psread.alignments)).set_tags('ZB',num_best).set_tags('ZS',bestAS)
+      _ = a.set_tags('ZN',len(psread.alignments)).set_tags('ZB',num_best).set_tags('ZS',psread.bestAS)
       if has_features:
         _ = a.set_tags('ZF',bestfeat_str)
 

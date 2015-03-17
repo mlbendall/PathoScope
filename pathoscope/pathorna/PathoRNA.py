@@ -71,7 +71,8 @@ class PathoRNAOptions:
       self.out_samfile = self.generate_filename('updated.sam')
 
   def generate_filename(self,suffix):
-    basename = '%s-%s-%s' % (self.exp_tag, self.ali_format, suffix)
+    basename = '%s-%s' % (self.exp_tag, suffix)
+    #basename = '%s-%s-%s' % (self.exp_tag, self.ali_format, suffix)
     return os.path.join(self.outdir,basename)
 
   def __str__(self):
@@ -154,19 +155,19 @@ def data_matrix(reads):
 
   return _unique, _repeat, _genomes, _reads
 
-def updated_alignments(psread,rdata,glookup,score_cutoff):
+def updated_alignments(psread, rdata, glookup,score_cutoff):
   from pathoscope.pathorna.utils import phred
 
-  if len(rdata) == 2: # This is a uniquely mapped read
+  if len(rdata) == 2:                                                          # Initially mapped to only one feature
     gname = glookup[rdata[0]]
     pri_aln,alt_alns = psread.aligned_to_genome(gname)
-    # Unique Primary, set mapq to 255
-    pri_aln.set_tags('ZP','UP').set_tags('ZQ',255).set_mapq(255)
+    # Primary alignment was the one chosen by PSRead.assign_best and was used in PathoID
+    pri_aln.set_tags('ZP','UP').set_tags('ZQ',255).set_mapq(255)               # Unique Primary, set mapq to 0
+    # Alternate alignments are present if read mapped multiple times to same feature
     for a in alt_alns:
-      # Unique Alternate, set mapq to 0
-      a.set_tags('ZP','UA').set_tags('ZQ',0).set_mapq(0)
+      a.set_tags('ZP','UA').set_tags('ZQ',0).set_mapq(0)                       # Unique Alternate, set mapq to 0
     return [pri_aln] + alt_alns
-  else:               # This is a non-uniquely mapped read
+  else:                                                                        # Initially mapped to more than one feature
     _updated = []
     top_pscore = max(rdata[2])
     top_genome = [glookup[rdata[0][i]] for i,s in enumerate(rdata[2]) if s==top_pscore]

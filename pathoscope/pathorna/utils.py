@@ -4,6 +4,7 @@ import pysam
 import math
 from collections import defaultdict
 import re
+import random
 
 """
 SAM flags:
@@ -65,13 +66,14 @@ def make_unmapped_mate(mate,template,add_tag=True):
   # a.template_length    = # Not set
   a.query_sequence       = template.query_sequence
   a.query_qualities      = template.query_qualities
-  a.tags                 = template.tags
+  #a.tags                 = template.tags
   a.is_secondary         = mate.is_secondary
   a.is_paired      = True
   a.is_proper_pair = False
   a.is_unmapped    = True
-  # This tag indicates the segment was created
-  if add_tag: a.setTag('ZC',1)
+  # This tag indicates the segment is a "mock pair"
+  a.setTag('YT', mate.get_tag('YT'))
+  if add_tag: a.setTag('ZT',"MP")
   return a
 
 """
@@ -155,7 +157,7 @@ class PSAlignment:
       self.is_secondary   = s1.is_secondary
       self.query_length   = s1.query_length if not s1.is_unmapped else 0
     else:
-      self.is_paired         = True
+      self.is_paired       = True
       self.is_proper_pair = s1.is_proper_pair and s2.is_proper_pair
       self.is_unmapped    = s1.is_unmapped and s2.is_unmapped
       self.is_secondary   = s1.is_secondary and s2.is_secondary
@@ -183,6 +185,13 @@ class PSAlignment:
     # Return instance to allow chaining
     return self
 
+  def set_secondary(self,value):
+    # Ensure MAPQ in acceptable range
+    self.is_secondary      = value
+    self.seg1.is_secondary = value
+    if self.is_paired:
+      self.seg1.is_secondary = value
+
   def coordinates(self):
     if self.is_unmapped:
       return None
@@ -207,92 +216,145 @@ class PSRead:
   """
   nofeature = '__nofeature__'
 
-  def __init__(self,readname,segs):
+  def __init__(self, readname, segs):
     self.readname       = readname
-    self.alignments     = []
     self.is_paired      = None
     self.is_proper_pair = None
     self.is_unmapped    = None    # Read is unmapped if all alignments are unmapped
     self.is_unique      = None    # Read is unique if only one mapped alignment
 
-    # Assumptions about input file:
-    #   - For a given read, segments are either ALL properly paired or ALL not properly paired
-    #   - Properly paired segments have their mate on the adjacent line
-    paired = segs[0].is_paired
-    assert all(s.is_paired == paired for s in segs), "s.is_paired does not match! %s" % [s.is_paired for s in segs]
-    if paired:
-      self.is_paired = True
-      proper = segs[0].is_proper_pair
-      assert all(s.is_proper_pair==proper for s in segs), "s.is_proper_pair does not match! %s" % [s.is_proper_pair for s in segs]
-      if proper:
-        self.is_proper_pair = True
-        self.is_unmapped    = False
-        self.alignments     = [PSAlignment(segs[i],segs[i+1]) for i in range(0,len(segs),2)]
-      else:
-        self.is_proper_pair = False
-        s0,s1 = segs[:2]
-        assert not s0.is_secondary and not s1.is_secondary
-        if s0.is_unmapped and s0.mate_is_unmapped:    # Both segments are unmapped
-          assert len(segs)==2 and s1.is_unmapped
-          self.is_unmapped  = True
-          self.alignments   = [PSAlignment(s0,s1)]
-        else:
-          self.is_unmapped  = False
-          if s1.is_unmapped:                          # One segment is unmapped
-            assert sum(s.is_unmapped for s in segs) == 1
-            self.alignments.append(PSAlignment(s0,s1))
-          else:                                       # Both segments are mapped
-            assert sum(s.is_unmapped for s in segs) == 0
-            self.alignments.append(PSAlignment(s0, make_unmapped_mate(s0,template=s1)))
-            s1.is_secondary = True
-            self.alignments.append(PSAlignment(s1,make_unmapped_mate(s1,template=s0)))
+    self.alignments     = []
+    self.features       = []
+    self.feat_aln_map   = {}
 
-          if len(segs) > 2:
-            lookup_r1 = dict((True if _.is_read1 else False, _) for _ in [s0,s1])
-            assert lookup_r1[True].is_read1
-            assert lookup_r1[False].is_read2
-            for s in segs[2:]:
-              assert s.is_secondary
-              m = make_unmapped_mate(s,template=lookup_r1[s.is_read2])
-              self.alignments.append(PSAlignment(s,m))
-    else:                                             # Read is not paired
-      self.is_paired      = False
-      self.is_proper_pair = False
-      self.is_unmapped    = segs[0].is_unmapped
-      self.alignments = [PSAlignment(s) for s in segs]
+    self.bestAS         = float('-inf')
 
+    self._make_alignments(segs)
+
+  def _make_alignments(self, segs):
+    """ Logic for making PSAlignments from segments
+    :param segs:
+    :return:
+    """
+    self.is_paired = segs[0].is_paired
+    assert all(s.is_paired == self.is_paired for s in segs), "Expected all segments to be paired or unpaired!\n%s" % [str(s) for s in segs]
+    if self.is_paired:
+      self._make_paired(segs)
+    else:
+      self._make_unpaired(segs)
+
+    # Set the primary alignment for this read
+    self._set_primary()
     # Read is unique if the number of mapped alignments == 1
-    self.is_unique      = len([a.is_unmapped==False for a in self.alignments]) == 1
-    # Initialize features array
-    self.features = [None] * len(self.alignments)
+    self.is_unique       = len([a.is_unmapped==False for a in self.alignments]) == 1
+    # Get the best alignments
+    self.bestAS          = self.alignments[0].AS #max(a.AS for a in self.alignments)
+
+  def _make_unpaired(self,segs):
+    self.is_proper_pair = False
+    self.is_unmapped    = segs[0].is_unmapped
+    for s in segs:
+      self.alignments.append(PSAlignment(s))
+
+  def _make_paired(self,segs):
+    self.is_proper_pair = segs[0].is_proper_pair
+    assert all(s.is_proper_pair==self.is_proper_pair for s in segs), "Expected all segments to be proper or not!\n%s" % [str(s) for s in segs]
+    # If properly paired, assume that mate is on the adjacent line
+    if self.is_proper_pair:
+      self.is_unmapped    = False
+      for i in range(0,len(segs),2):
+        self.alignments.append(PSAlignment(segs[i],segs[i+1]))
+        #self.alignments     = [PSAlignment(segs[i],segs[i+1]) for i in range(0,len(segs),2)]
+    else:
+      ''' Bowtie handling of segements that are not properly paired
+          There will be two primary segments (one for read1, one for read2)
+          These might be unmapped
+      '''
+      primary   = []
+      secondary = []
+      for seg in segs:
+        if not seg.is_secondary:
+          primary.append(seg)
+        else:
+          secondary.append(seg)
+
+      assert len(primary) == 2, "Expected exactly two primary segments!\n%s" % [str(s) for s in segs]
+
+      # If either read1 or read2 has no mappings, its primary segment will be unmapped
+      # Create a primary PSAlignment containing both segments
+      if any(s.is_unmapped for s in primary):
+          self.is_unmapped = all(s.is_unmapped for s in primary) # Unmapped if both segments are unmapped
+          self.alignments.append(PSAlignment(*primary))
+
+      # Both segments have at least one alignment (could be discordant or neither)
+      # Create a separate PSAlignment for each segment, make the better one primary
+      else:
+        self.is_unmapped = False
+        # Create mate for primary[0] using primary[1] as template
+        a1 = PSAlignment(primary[0], make_unmapped_mate(primary[0], template=primary[1]))
+        # Create mate for primary[1] using primary[0] as template
+        a2 = PSAlignment(primary[1], make_unmapped_mate(primary[1], template=primary[0]))
+        self.alignments.append(a1)
+        self.alignments.append(a2)
+
+      # Make secondary PSAlignments for remaining alignments
+      if secondary:
+        # Fast lookup of the primary template
+        lookup_r1 = dict((True if _.is_read1 else False, _) for _ in primary)
+        assert lookup_r1[True].is_read1
+        assert lookup_r1[False].is_read2
+        for s in secondary:
+          assert s.is_secondary
+          m = make_unmapped_mate(s,template=lookup_r1[s.is_read2])
+          self.alignments.append(PSAlignment(s,m))
+
+  def _set_primary(self):
+    """ Logic for setting the primary alignment for PSRead
+    :return:
+    """
+    self.alignments.sort(key=lambda x:x.AS, reverse=True)
+    self.alignments[0].set_secondary(False)
+    for a in self.alignments[1:]:
+      a.set_secondary(True)
 
   def assign_feats(self, ref_lookup, feature_lookup, use_chrom=False):
+    """ Assign each alignment to a feature
+    :param ref_lookup:      Dictionary mapping reference index to reference name
+    :param feature_lookup:  FeatureLookup object
+    :param use_chrom:       No feature reads
+    :return:
+    """
+    assert not self.features, "Features have already been assigned!"
     for i,a in enumerate(self.alignments):
-      if a.is_unmapped: continue
+      if a.is_unmapped:
+        self.features.append(None)
+        continue
       refidx,spos,epos = a.coordinates()
       feat = feature_lookup.lookup_interval(ref_lookup[refidx], spos, epos)
       if feat is not None:
-        self.features[i] = feat
+        self.features.append(feat)
       else:
         if use_chrom:
-          self.features[i] = '%s.%s' % (self.nofeature,ref_lookup[refidx])
+          # self.features[i] = '%s.%s' % (self.nofeature,ref_lookup[refidx])
+          self.features.append('%s.%s' % (self.nofeature,ref_lookup[refidx]))
         else:
-          self.features[i] = self.nofeature
+          # self.features[i] = self.nofeature
+          self.features.append(self.nofeature)
 
   def assign_best(self):
-    import random
-    from collections import defaultdict
-
+    """ One alignment is selected for features with multiple alignments
+    :return:
+    """
+    # One or more features has multiple alignments
     # Group alignments according to feature
     tmp = defaultdict(list)
     for f,a in zip(self.features,self.alignments):
       if f is not None: # Alignments that did not get assigned to a feature will have None
         tmp[f].append(a)
 
-    # Assign the best alignment within each feature
-    self.feat_aln_map = {}
-    for f,alist in tmp.iteritems():
-      if len(alist)==1:
+    while tmp:
+      f,alist = tmp.popitem()
+      if len(alist) == 1:
         self.feat_aln_map[f] = alist[0]
       else:
         # Sort by edit distance, then by alignment score
@@ -306,6 +368,10 @@ class PSRead:
     return len(self.feat_aln_map)==1
 
   def aligned_to_genome(self,genome_name):
+    ''' Returns all alignments to the given genome name
+    :param genome_name: Name of genome
+    :return:
+    '''
     primary = self.feat_aln_map[genome_name]
     alternates = [a for f,a in zip(self.features,self.alignments) if f==genome_name]
     alternates = [a for a in alternates if not a == primary and a.AS==primary.AS and a.NM==primary.NM]
