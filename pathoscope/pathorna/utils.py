@@ -378,6 +378,10 @@ class PSRead:
     return primary, alternates
 
   def structured_data(self):
+    '''
+    Creates data structure for read used by pathoscope_em and other functions
+    :return: [list(genomes), list(scores), list(score), max score]
+    '''
     _genomes,alns = zip(*self.feat_aln_map.iteritems())
     _scores = [a.AS + a.query_length for a in alns]
     return [list(_genomes),_scores,[float(_scores[0])],max(_scores)]

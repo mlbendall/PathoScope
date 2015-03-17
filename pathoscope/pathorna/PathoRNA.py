@@ -107,6 +107,11 @@ def parse_reads(samfile, flookup):
   return allreads
 
 def data_matrix(reads):
+  '''
+  Creates data structure used by pathoscope_em and other functions
+  :param reads:
+  :return:
+  '''
   from pathoscope.utils import samUtils
   _unique = {}
   _repeat = {}
@@ -116,6 +121,9 @@ def data_matrix(reads):
   for rname,r in reads.iteritems():
     if r.is_unmapped: continue
     d = r.structured_data()
+    # Ignore if read did not align to any annotations
+    if all(g==PSRead.nofeature for g in d[0]):
+      continue
     gset.update(set(d[0]))
     maxscore = max(d[3],maxscore)
     minscore = min(d[1]+[minscore])

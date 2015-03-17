@@ -1,5 +1,4 @@
 #! /usr/bin/env python
-
 __author__ = 'bendall'
 
 #	Pathoscope - Predicts strains of genomes in Nextgen seq alignment file (sam/bl8)
@@ -92,5 +91,4 @@ if __name__=='__main__':
   emopts.add_argument('--maxIter', type=int, default=100,
                       help='EM Algorithm maximum iterations')
 
-  #  parser.add_argument('--out_samfile', help='Name for updated alignment file')
   main(parser)
