@@ -6,6 +6,8 @@ from collections import defaultdict
 import re
 import random
 
+from bisect import bisect_left, bisect_right
+
 """
 SAM flags:
   0x1   template having multiple segments in sequencing
@@ -89,28 +91,64 @@ class Feature:
 
 class FeatureLookup:
   def __init__(self,gtffile,attr_name="locus"):
+    # Instance variables
+    self._locus = []                      # List of locus names
+    self._intervals = defaultdict(list)   # Dictionary mapping reference name to list of intervals
+
+    # Read GTF file
     fh = open(gtffile,'rU') if isinstance(gtffile,str) else gtffile
     lines = (l.strip('\n').split('\t') for l in fh if not l.startswith('#'))
-    # List of locus names
-    self._locus = []
-    # Dictionary with chromosome as key. List of tuples as value
-    # Each tuple has a start coordinate, end coordinate, and index
-    self._gdict = defaultdict(list)
     for i,l in enumerate(lines):
+      # Attribute dictionary for feature
       attr = dict(re.search('(\S+)\s"(.+?)"',f.strip()).groups() for f in l[8].split(';') if f.strip())
-      self._locus.append( attr[attr_name] if attr_name in attr else 'PSRE%04d' % i )
-      self._gdict[l[0]].append((int(l[3]),int(l[4]),i))
+      _locus_name = attr[attr_name] if attr_name in attr else 'PSRE%04d' % i
+      if _locus_name not in self._locus:
+        self._locus.append(_locus_name)
+      else:
+        assert False, "Non-unique locus name found: %s" % _locus_name
+      #self._locus.append( attr[attr_name] if attr_name in attr else 'PSRE%04d' % i )
+      self._intervals[l[0]].append((int(l[3]),int(l[4]),i))
 
-  def lookup(self,ref,pos,get_index=False):
+    # Sort intervals by start position
+    self._intS = {}
+    self._intE = {}
+    for ref in self._intervals.keys():
+      self._intervals[ref].sort(key=lambda x:x[0])
+      self._intS[ref] = [s for s,e,i in self._intervals[ref]]
+      self._intE[ref] = [e for s,e,i in self._intervals[ref]]
+
+  def slow_lookup(self, ref, pos, get_index=False):
     ''' Return the feature for a given reference and position '''
     # Tests every locus in chromosome
-    feats = [i for s,e,i in self._gdict[ref] if s <= pos <= e]
+    if ref not in self._intervals:
+      return None
+
+    feats = [i for s,e,i in self._intervals[ref] if s <= pos <= e]
     if len(feats)==0:
       return None
     else:
       assert len(feats)==1
       if get_index: return feats[0]
       return self._locus[feats[0]]
+
+  def fast_lookup(self, ref, pos, get_index=False):
+    ''' Return the feature for a given reference and position '''
+    if ref not in self._intervals:
+      return None
+
+    sidx = bisect_right(self._intS[ref], pos)   # Return index of interval start
+    eidx = bisect_right(self._intE[ref], pos-1)
+    feats = [self._intervals[ref][i] for i in range(eidx,sidx)]
+    if len(feats) == 0:
+      return None
+    else:
+      assert len(feats)==1
+      if get_index: return feats[0][2]
+      return self._locus[feats[0][2]]
+
+  def lookup(self, ref, pos, get_index=False):
+    # return self.slow_lookup(ref, pos, get_index)
+    return self.fast_lookup(ref, pos, get_index)
 
   def lookup_interval(self,ref,spos,epos):
     ''' Resolve the feature that overlaps or contains the given interval
@@ -134,7 +172,7 @@ class FeatureLookup:
 
   def feature_length(self):
     _ret = {}
-    for chr,ilist in self._gdict.iteritems():
+    for chr,ilist in self._intervals.iteritems():
       for spos,epos,locus_idx in ilist:
         _ret[self._locus[locus_idx]] = epos-spos
     return _ret
@@ -168,10 +206,23 @@ class PSAlignment:
     self.AS = sum(t['AS'] if 'AS' in t else 0 for t in tags)
     self.NM = sum(t['NM'] if 'AS' in t else 0 for t in tags)
 
-  def set_tags(self,tag,value):
-    self.seg1.setTag(tag,value)
-    if self.is_paired:
-      self.seg2.setTag(tag,value)
+  def set_tags(self, tag, value=None):
+    ''' Set tags for alignment
+    :param tag:
+    :param value:
+    :return:
+    '''
+    if value is None:
+      assert type(tag) is dict, "ERROR: set_tags requires dict if single arg is provided"
+      for k,v in tag.iteritems():
+        self.seg1.setTag(k,v)
+        if self.is_paired:
+          self.seg2.setTag(k,v)
+    else:
+      self.seg1.setTag(tag,value)
+      if self.is_paired:
+        self.seg2.setTag(tag,value)
+
     # Return instance to allow chaining
     return self
 
@@ -335,10 +386,8 @@ class PSRead:
         self.features.append(feat)
       else:
         if use_chrom:
-          # self.features[i] = '%s.%s' % (self.nofeature,ref_lookup[refidx])
           self.features.append('%s.%s' % (self.nofeature,ref_lookup[refidx]))
         else:
-          # self.features[i] = self.nofeature
           self.features.append(self.nofeature)
 
   def assign_best(self):
@@ -366,6 +415,10 @@ class PSRead:
   def unique_feat(self):
     ''' Returns True if read maps to exactly one feature '''
     return len(self.feat_aln_map)==1
+
+  def aligns_to_feat(self):
+    ''' Returns True if read aligns to an annotated feature '''
+    return any(f != self.nofeature for f in self.features)
 
   def aligned_to_genome(self,genome_name):
     ''' Returns all alignments to the given genome name
