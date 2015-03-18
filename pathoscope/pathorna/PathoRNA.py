@@ -24,7 +24,8 @@ __author__ = 'bendall'
 
 import os, sys
 import pysam
-from pathoscope.pathorna.utils import PSRead, FeatureLookup
+from pathoscope.pathorna.utils import PSRead
+from pathoscope.pathorna.utils import AnnotationLookup
 from pathoscope.pathorna.utils import iterread
 from pathoscope.pathorna.utils import phred # Used by: updated_alignments
 from pathoscope.utils import samUtils
@@ -397,12 +398,11 @@ def calculate_tpm(features, feat_len, counts, r_l):
 
 def pathoscope_rna_reassign(opts):
   import pysam
-  from pathoscope.pathorna.utils import FeatureLookup
   from time import time
 
   PSRead.nofeature = opts.no_feature_key
 
-  flookup = FeatureLookup(opts.gtf_file)
+  flookup = AnnotationLookup(opts.gtf_file)
   samfile = pysam.AlignmentFile(opts.ali_file)
 
   if opts.verbose:

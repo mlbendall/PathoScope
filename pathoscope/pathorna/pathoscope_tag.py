@@ -9,7 +9,8 @@ import pysam
 pathoscopedir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0,pathoscopedir)
 from pathoscope.pathorna.utils import iterread
-from pathoscope.pathorna.utils import PSRead, FeatureLookup
+from pathoscope.pathorna.utils import PSRead\
+from pathoscope.pathorna.utils import AnnotationLookup
 
 PALETTE = {'orange':             (230, 159, 0),
            'sky_blue':           (86, 180, 233),
@@ -78,7 +79,7 @@ def main(parser):
 
   has_features = args.gtffile is not None
   if has_features:
-    flookup = FeatureLookup(args.gtffile)
+    flookup = AnnotationLookup(args.gtffile)
 
   outfile = pysam.AlignmentFile(args.outfile, 'wh', header=samfile.header)
 
