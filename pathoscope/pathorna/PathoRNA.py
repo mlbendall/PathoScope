@@ -26,7 +26,9 @@ import os, sys
 import pysam
 from pathoscope.pathorna.utils import PSRead, FeatureLookup
 from pathoscope.pathorna.utils import iterread
+from pathoscope.pathorna.utils import phred # Used by: updated_alignments
 from pathoscope.utils import samUtils
+
 
 class PathoRNAOptions:
   option_fields = ['verbose','score_cutoff','out_matrix','no_updated_sam','emEpsilon','maxIter','piPrior','thetaPrior',
@@ -90,9 +92,10 @@ def wrap_computeBestHit(unique,repeat,genomes,reads):
   labels = ['bestHitReads','bestHit','level1','level2']
   return dict(zip(labels,tup))
 
-def parse_reads(samfile, flookup):
-  from pathoscope.pathorna.utils import PSRead
-  from pathoscope.pathorna.utils import iterread
+"""
+def xparse_reads(samfile, flookup):
+  # from pathoscope.pathorna.utils import PSRead
+  # from pathoscope.pathorna.utils import iterread
 
   allreads = {}
 
@@ -105,6 +108,85 @@ def parse_reads(samfile, flookup):
     allreads[rname].assign_best()
 
   return allreads
+"""
+
+def mp_parse_reads(samfile, flookup, opts=None):
+  ''' Multiprocessing version of read parser  '''
+  import pathos.multiprocessing as mp
+
+  def _procread(rname,segments):
+    r = PSRead(rname,segments)
+    if r.is_unmapped:
+      return None
+    r.assign_feats(refnames, flookup)
+    if not r.aligns_to_feat():
+      return None
+    r.assign_best()
+    return r
+
+  def _collect(result):
+    if result is not None:
+      mapped[result.readname] = result
+
+  _verbose = opts.verbose if opts is not None else True
+
+  refnames = dict(enumerate(samfile.references))
+  # counts = {'unmapped':0, 'nofeat':0, 'mapped':0}
+  mapped   = {}
+
+  pool = mp.Pool(processes=4)
+  for t in iterread(samfile):
+    pool.apply_async(_procread, t, callback=_collect)
+
+  pool.close()
+  print >>sys.stderr, "pool closed"
+  pool.join()
+  print >>sys.stderr, "pool join"
+  return mapped
+
+def sp_parse_reads(samfile, flookup, opts=None):
+  _verbose = opts.verbose if opts is not None else True
+
+  counts = {'unmapped':0, 'nofeat':0, 'mapped':0}
+  mapped   = {}
+
+  # Lookup reference name from reference ID
+  refnames = dict(enumerate(samfile.references))
+
+  for rname,segments in iterread(samfile):
+    r = PSRead(rname,segments)
+    if r.is_unmapped:
+      counts['unmapped'] += 1
+    else:
+      r.assign_feats(refnames, flookup)
+      if r.aligns_to_feat():
+        r.assign_best()
+        mapped[rname] = r
+        counts['mapped'] += 1
+      else:
+        counts['nofeat'] += 1
+
+  if _verbose:
+    print >>sys.stderr, "Processed %d fragments" % sum(counts.values())
+    print >>sys.stderr, "\t%d fragments were unmapped" % counts['unmapped']
+    print >>sys.stderr, "\t%d fragments mapped to one or more positions on reference genome" % (counts['mapped'] + counts['nofeat'])
+    print >>sys.stderr, "\t\t%d fragments mapped to reference but did not map to annotation" % counts['nofeat']
+    print >>sys.stderr, "\t\t%d fragments have at least one alignment within annotation" % counts['mapped']
+
+  return mapped
+
+def parse_reads(samfile, flookup, opts=None):
+  """
+  try:
+    import pathos.multiprocessing as mp
+    print >>sys.stderr, "Using multiprocessing..."
+    return mp_parse_reads(samfile, flookup, opts=None)
+  except ImportError:
+    print >>sys.stderr, "Using single processing..."
+    return sp_parse_reads(samfile, flookup, opts=None)
+  """
+  return sp_parse_reads(samfile, flookup, opts=None)
+
 
 def data_matrix(reads):
   '''
@@ -163,17 +245,33 @@ def data_matrix(reads):
 
   return _unique, _repeat, _genomes, _reads
 
-def updated_alignments(psread, rdata, glookup,score_cutoff):
-  from pathoscope.pathorna.utils import phred
+"""
+Tags used in updated alignments:
+ZF:Z - Name of annotation feature containing alignment
+ZQ:i - Quality score
+ZG
+"""
+
+def updated_alignments(psread, rdata, glookup, score_cutoff):
+  '''
+
+  :param psread:           PSRead to get alignments for
+  :param rdata:            Matrix data for this read
+  :param glookup:          Lookup table to get feature name
+  :param score_cutoff:     Minimum score to be included in alignment
+  :return:
+  '''
 
   if len(rdata) == 2:                                                          # Initially mapped to only one feature
     gname = glookup[rdata[0]]
     pri_aln,alt_alns = psread.aligned_to_genome(gname)
     # Primary alignment was the one chosen by PSRead.assign_best and was used in PathoID
-    pri_aln.set_tags('ZP','UP').set_tags('ZQ',255).set_mapq(255)               # Unique Primary, set mapq to 0
+    pri_aln.set_tags({'ZP':'UP', 'ZQ':1.0,}).set_mapq(255)                     # Unique Primary, set mapq to 255
+    if gname != PSRead.nofeature: pri_aln.set_tags('ZF',gname)
     # Alternate alignments are present if read mapped multiple times to same feature
     for a in alt_alns:
-      a.set_tags('ZP','UA').set_tags('ZQ',0).set_mapq(0)                       # Unique Alternate, set mapq to 0
+      a.set_tags({'ZP':'UA', 'ZQ':0.0, 'ZF':gname,}).set_mapq(0)               # Unique Alternate, set mapq to 0
+      if gname != PSRead.nofeature: a.set_tags('ZF',gname)
     return [pri_aln] + alt_alns
   else:                                                                        # Initially mapped to more than one feature
     _updated = []
@@ -190,9 +288,11 @@ def updated_alignments(psread, rdata, glookup,score_cutoff):
         gname = glookup[rdata[0][i]]
         pri_aln,alt_alns = psread.aligned_to_genome(gname)
         level = 'H' if upPscore >= 0.5 else 'L'
-        pri_aln.set_tags('ZP','%sP' % level).set_tags('ZQ',phred(upPscore)).set_mapq(phred(upPscore)).set_tags('ZG',top_genome)
+        pri_aln.set_tags({'ZP':'%sP' % level, 'ZQ':round(upPscore,3),}).set_mapq(phred(upPscore)).set_tags('ZG',top_genome)
+        if gname != PSRead.nofeature: pri_aln.set_tags('ZF',gname)
         for a in alt_alns:
-          a.set_tags('ZP','%sA' % level).set_tags('ZQ',phred(upPscore)).set_mapq(phred(upPscore)).set_tags('ZG',top_genome)
+          a.set_tags({'ZP':'%sA' % level, 'ZQ':0.0,}).set_mapq(0)
+          if gname != PSRead.nofeature: a.set_tags('ZF',gname)
         _updated += [pri_aln] + alt_alns
     return _updated
 
