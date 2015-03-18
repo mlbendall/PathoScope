@@ -9,7 +9,7 @@ import pysam
 pathoscopedir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0,pathoscopedir)
 from pathoscope.pathorna.utils import iterread
-from pathoscope.pathorna.utils import PSRead\
+from pathoscope.pathorna.utils import PSRead
 from pathoscope.pathorna.utils import AnnotationLookup
 
 PALETTE = {'orange':             (230, 159, 0),

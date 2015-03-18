@@ -2,13 +2,15 @@ __author__ = 'bendall'
 
 import re
 from collections import defaultdict
-from bisect import bisect_right
+from bisect import bisect_left,bisect_right
 
 class AnnotationLookup:
-  def __init__(self,gtffile,attr_name="locus"):
+  def __init__(self, gtffile, attr_name="locus"):
     # Instance variables
     self._locus = []                      # List of locus names
-    self._intervals = defaultdict(list)   # Dictionary mapping reference name to list of intervals
+    self._intervals = defaultdict(list)   # Dictionary containing lists of intervals for each reference
+    self._intS = {}                       # Dictionary containing lists of interval start positions for each reference
+    self._intE = {}                       # Dictionary containing lists of interval end positions for each reference
 
     # Read GTF file
     fh = open(gtffile,'rU') if isinstance(gtffile,str) else gtffile
@@ -25,8 +27,6 @@ class AnnotationLookup:
       self._intervals[l[0]].append((int(l[3]),int(l[4]),i))
 
     # Sort intervals by start position
-    self._intS = {}
-    self._intE = {}
     for ref in self._intervals.keys():
       self._intervals[ref].sort(key=lambda x:x[0])
       self._intS[ref] = [s for s,e,i in self._intervals[ref]]
@@ -51,8 +51,12 @@ class AnnotationLookup:
     if ref not in self._intervals:
       return None
 
-    sidx = bisect_right(self._intS[ref], pos)   # Return index of interval start
-    eidx = bisect_right(self._intE[ref], pos-1)
+    sidx = bisect_right(self._intS[ref], pos)   # Return index of leftmost interval where start > pos
+    # If the end position is inclusive (as in GTF) use bisect_left
+    eidx = bisect_left(self._intE[ref], pos)   # Return index of leftmost interval where end >= pos
+
+    # If sidx == eidx, the position is between intervals at (sidx-1) and (sidx)
+    # If eidx < sidx, the position is within eidx
     feats = [self._intervals[ref][i] for i in range(eidx,sidx)]
     if len(feats) == 0:
       return None
