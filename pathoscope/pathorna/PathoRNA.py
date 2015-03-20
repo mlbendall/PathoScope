@@ -167,6 +167,11 @@ def sp_parse_reads(samfile, flookup, opts=None):
       else:
         counts['nofeat'] += 1
 
+    if _verbose and sum(counts.values()) % 10000 == 0:
+      print >>sys.stderr, "...Processed %d fragments" % sum(counts.values())
+
+
+
   if _verbose:
     print >>sys.stderr, "Processed %d fragments" % sum(counts.values())
     print >>sys.stderr, "\t%d fragments were unmapped" % counts['unmapped']
