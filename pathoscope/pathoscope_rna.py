@@ -21,7 +21,7 @@ import os, sys
 def main(parser):
   # Imports
   from time import time
-  pathoscopedir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+  pathoscopedir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
   sys.path.insert(0,pathoscopedir)
   from pathoscope.pathorna import PathoRNA
 

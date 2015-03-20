@@ -6,7 +6,7 @@ import sys, os
 import pysam
 
 # Imports
-pathoscopedir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+pathoscopedir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0,pathoscopedir)
 from pathoscope.pathorna.utils import iterread
 from pathoscope.pathorna.utils import PSRead
