@@ -23,6 +23,7 @@ __author__ = 'bendall'
 #	along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import os, sys
+from time import time
 import pysam
 from pathoscope.pathorna.utils import PSRead
 from pathoscope.pathorna.utils import AnnotationLookup
@@ -75,13 +76,16 @@ class PathoRNAOptions:
 
   def generate_filename(self,suffix):
     basename = '%s-%s' % (self.exp_tag, suffix)
-    #basename = '%s-%s-%s' % (self.exp_tag, self.ali_format, suffix)
     return os.path.join(self.outdir,basename)
 
   def __str__(self):
     _ret = "PathoRNAOptions:\n"
     _ret += '\n'.join('  %s%s' % (f.ljust(30),getattr(self,f)) for f in self.option_fields)
     return _ret
+
+"""
+Wrappers for pathoscope functions
+"""
 
 def wrap_pathoscope_em(unique,repeat,genomes,opts):
   from pathoscope.pathoid import PathoID
@@ -94,23 +98,8 @@ def wrap_computeBestHit(unique,repeat,genomes,reads):
   return dict(zip(labels,tup))
 
 """
-def xparse_reads(samfile, flookup):
-  # from pathoscope.pathorna.utils import PSRead
-  # from pathoscope.pathorna.utils import iterread
-
-  allreads = {}
-
-  # Lookup reference name from reference ID
-  refnames = dict(enumerate(samfile.references))
-
-  for rname,segments in iterread(samfile):
-    allreads[rname] = PSRead(rname,segments)
-    allreads[rname].assign_feats(refnames, flookup)
-    allreads[rname].assign_best()
-
-  return allreads
+Functions for parsing SAM file
 """
-
 def mp_parse_reads(samfile, flookup, opts=None):
   ''' Multiprocessing version of read parser  '''
   import pathos.multiprocessing as mp
@@ -167,10 +156,8 @@ def sp_parse_reads(samfile, flookup, opts=None):
       else:
         counts['nofeat'] += 1
 
-    if _verbose and sum(counts.values()) % 10000 == 0:
+    if _verbose and sum(counts.values()) % 100000 == 0:
       print >>sys.stderr, "...Processed %d fragments" % sum(counts.values())
-
-
 
   if _verbose:
     print >>sys.stderr, "Processed %d fragments" % sum(counts.values())
@@ -182,6 +169,8 @@ def sp_parse_reads(samfile, flookup, opts=None):
   return mapped
 
 def parse_reads(samfile, flookup, opts=None):
+  # Multiprocessing version does not perform well
+  # Performance is worse than single processing version
   """
   try:
     import pathos.multiprocessing as mp
@@ -200,7 +189,6 @@ def data_matrix(reads):
   :param reads:
   :return:
   '''
-  from pathoscope.utils import samUtils
   _unique = {}
   _repeat = {}
   maxscore = float('-inf')
@@ -332,7 +320,6 @@ def write_tsv_report(genomes, initial_guess, final_guess, initial_report, final_
 def write_abundance_report(genomes, initial_guess, final_guess, initial_report, final_report, nreads, opts,
                            genome_lengths, avg_read_len):
   '''
-
   :param genomes:
   :param initial_guess:
   :param final_guess:
@@ -402,8 +389,7 @@ def calculate_tpm(features, feat_len, counts, r_l):
   return tpms
 
 def pathoscope_rna_reassign(opts):
-  import pysam
-  from time import time
+
 
   PSRead.nofeature = opts.no_feature_key
 
