@@ -80,8 +80,8 @@ def main(parser):
     
   samfile  = pysam.AlignmentFile(args.samfile)
   refnames = dict(enumerate(samfile.references))
-  out1 = open('%s.links_feat.txt' % args.samfile,'w')
-  out2 = open('%s.links_nofeat.txt' % args.samfile,'w')  
+  out1 = open('%s.links_feat_new.txt' % args.samfile,'w')
+  #out2 = open('%s.links_nofeat.txt' % args.samfile,'w')  
 
   if args.gtffile is None:
     sys.exit("GTF file is required")
@@ -110,13 +110,18 @@ def main(parser):
             rid2, s2, e2 = aln2.coordinates()
             ref2 = 'hs%s' % refnames[rid2][3:]
             if fname2!='__nofeature__':
-              print >>out1, '%s\t%d\t%d\t%s\t%d\t%d' % (ref1, s1, e1, ref2, s2, e2)
+              addtext = 'color=lred_a5'
             else:
-              print >>out2, '%s\t%d\t%d\t%s\t%d\t%d' % (ref1, s1, e1, ref2, s2, e2)
+              addtext = 'color=lred_a5'
+            print >>out1, '%s\t%d\t%d\t%s\t%d\t%d\t%s' % (ref1, s1, e1, ref2, s2, e2, fname2)
+            #if fname2!='__nofeature__':
+            #  print >>out1, '%s\t%d\t%d\t%s\t%d\t%d' % (ref1, s1, e1, ref2, s2, e2)
+            #else:
+            #  print >>out2, '%s\t%d\t%d\t%s\t%d\t%d' % (ref1, s1, e1, ref2, s2, e2)
 
   samfile.close()
   out1.close()
-  out2.close()
+  #out2.close()
   print >>sys.stderr, 'reads: %d' % nbest_target
 
 """

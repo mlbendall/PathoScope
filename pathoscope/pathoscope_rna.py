@@ -37,7 +37,11 @@ def main(parser):
     print >>sys.stderr, opts
 
   start = time()
-  PathoRNA.pathoscope_rna_reassign(opts)
+  if True:
+    PathoRNA.pathoscope_rna_reassign(opts)
+  else:
+    PathoRNA.retroscope_reassign(opts)
+
   elapsed = time() - start
   if opts.verbose:
     print >>sys.stderr, "Pathoscope RNA time: %d minutes, %d seconds" % ((elapsed / 60), (elapsed % 60))

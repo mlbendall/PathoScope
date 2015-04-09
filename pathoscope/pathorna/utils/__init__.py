@@ -3,6 +3,7 @@ __author__ = 'bendall'
 import math
 from AnnotationLookup import AnnotationLookup
 from PathoscopeRead import PathoscopeRead as PSRead
+from RSMatrix import RSMatrix
 
 def phred(f):
   """ Calculate phred quality score for given error probability

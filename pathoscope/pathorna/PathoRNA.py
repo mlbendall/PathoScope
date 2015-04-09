@@ -464,3 +464,159 @@ def pathoscope_rna_reassign(opts):
   samfile.close()
   if not opts.no_updated_sam: updated_samfile.close()
   return
+
+########################################################################################################################
+import numpy as np
+from scipy import sparse
+
+def normalize_matrix(mat):
+  ''' Returns a new matrix normalized by row '''
+  m = mat.copy()
+  row_sums = np.array(m.sum(axis=1))[:,0]
+  row_indices, col_indices = m.nonzero()
+  m.data /= row_sums[row_indices]
+  return m
+
+# Rescaling the sam alignment score and taking exponent
+def rescale_rawscore(mat):
+  _mmax = mat.max()
+  _mmin = mat.min()
+  _scaling_factor = 100.0 / (_mmax - _mmin) if _mmin < 0 else 100.0 / _mmax
+  return (mat * _scaling_factor).expm1()
+
+def retroscope_em(Q, Y, G, opts):
+
+  # Set options
+  piPrior    = opts.piPrior
+  thetaPrior = opts.thetaPrior
+  emEpsilon  = opts.emEpsilon
+  maxIter    = opts.maxIter
+
+  # Copy inputs
+  q_mat = Q.copy()
+
+  # Initialize pi and theta
+  pi     = np.array([1./G] * G)
+  theta  = np.array([1./G] * G)
+  initPi = pi.copy()
+
+
+  weights = [q_mat[i,:].max() for i in range(q_mat.shape[0])]
+  u_total  = sum(w for y_i,w in zip(Y,weights) if y_i)
+  nu_total = sum(w for y_i,w in zip(Y,weights) if not y_i)
+
+  # pisum0 is unique read weighting
+  pisum0 = np.array(q_mat[np.array(Y).nonzero()].sum(axis=0))[0]
+
+  #pisum0 = np.array([0.] * G)
+  #for i,y_i in enumerate(y):
+  #  if y_i:
+  #    nz = q_mat[i,:].nonzero()[1]
+  #    assert len(nz) == 1
+  #    pisum0[nz[0]] += q_mat[i,nz[0]]
+
+  # Prior weight is the weight of the best alignment.
+  priorWeight = q_mat.max()
+
+
+  for iter_num in range(maxIter):
+    #--- Expectation step:
+
+    # This is the multiplier for the matrix
+    mult =  (pi * theta).T ** (1-np.matrix(Y)).T
+    # Calculate expected values for x_i
+    q_tmp = sparse.csr_matrix( q_mat.multiply(mult) )
+    # Normalize values
+    n_tmp = normalize_matrix(q_tmp)
+
+    thetasum = np.array( n_tmp.T.multiply(weights).sum(axis=1).T)[0]
+
+    #--- Maximization step:
+    # Estimate pi_hat
+    pisum = thetasum + pisum0
+    pi_hat_denom = u_total + nu_total + (piPrior * priorWeight) * len(pisum)
+    pi_hat = (pisum + (piPrior * priorWeight)) / pi_hat_denom
+
+    # Estimate theta_hat
+
+    theta_hat_denom = nu_total + (thetaPrior * priorWeight) * len(thetasum)
+    theta_hat = (thetasum + (thetaPrior * priorWeight)) / theta_hat_denom
+
+    cutoff = sum(abs(pi - pi_hat))
+    print "[%d]%g" % (iter_num, cutoff)
+
+    pi, theta, q_mat, n_mat = pi_hat, theta_hat, q_tmp, n_tmp
+
+    if cutoff <= emEpsilon:
+      break
+
+  return pi, theta, q_mat, n_mat
+
+def matrix_print(m,rownames,colnames):
+  dm = m.todense()
+  nrow,ncol = dm.shape
+  retval = '\t%s\n' % '\t'.join(colnames[c] for c in range(ncol))
+  for r in range(nrow):
+    retval += '%s\t%s\n' % (rownames[r],'\t'.join(str(dm[r,c]) for c in range(ncol)))
+
+  return retval
+
+def retroscope_reassign(opts):
+  """ Reassignment algorithm for retroscope
+  :param opts:
+  :return:
+  """
+  from pathoscope.pathorna.utils import RSMatrix
+
+  PSRead.nofeature = opts.no_feature_key
+  flookup = AnnotationLookup(opts.gtf_file)
+  samfile = pysam.AlignmentFile(opts.ali_file)
+
+  if opts.verbose:
+    print >>sys.stderr, "RetroScope: Loading alignment file (%s)" % opts.ali_file
+    loadstart = time()
+
+  mapped = parse_reads(samfile, flookup, opts)
+
+  if opts.verbose:
+    print >>sys.stderr, "Time to load alignment:".ljust(40) + "%d seconds" % (time() - loadstart)
+
+  # Build the matrix
+  ridx = {}
+  gidx = {}
+  d = []
+  for rname,r in mapped.iteritems():
+    i = ridx.setdefault(rname,len(ridx))
+    for gname,aln in r.feat_aln_map.iteritems():
+      j = gidx.setdefault(gname,len(gidx))
+      d.append((i, j, aln.AS + aln.query_length))
+
+  raw_mat = RSMatrix(d,ridx,gidx)
+  R,G = raw_mat.shape
+  # reads   = [k for k,v in sorted(ridx.iteritems(),key=lambda x:x[1])]
+  # genomes = [k for k,v in sorted(gidx.iteritems(),key=lambda x:x[1])]
+
+  raw_mat = sparse.coo_matrix((d['V'],(d['I'],d['J'])), shape=(R,G), dtype=int).tocsr()
+  q_mat = rescale_rawscore(raw_mat)
+  n_mat = normalize_matrix(q_mat)
+
+  with open(opts.generate_filename('x_initial.txt'),'w') as outh:
+    print >>outh, matrix_print(n_mat,reads,genomes)
+
+  # Indicator function
+  y = [1 if mapped[r].unique_feat() else 0 for r in reads]
+
+  if opts.verbose:
+    print >>sys.stderr, "EM iteration..."
+    print >>sys.stderr, "(Genomes,Reads)=%dx%d" % (len(genomes),len(reads))
+    print >>sys.stderr, "Delta Change:"
+    emtime = time()
+
+  pi, theta, q_mat, n_mat = retroscope_em(q_mat, y, G, opts)
+
+  if opts.verbose:
+    print >>sys.stderr, "Time for EM iteration:".ljust(40) +  "%d seconds" % (time() - emtime)
+
+  with open(opts.generate_filename('x_final.txt'),'w') as outh:
+    print >>outh, matrix_print(n_mat,reads,genomes)
+
