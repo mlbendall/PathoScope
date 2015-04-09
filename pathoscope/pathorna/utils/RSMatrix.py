@@ -37,6 +37,9 @@ class RSMatrix:
   def sum(self):
     return self._func_row(sum)
 
+  def copy(self):
+    return deepcopy(self)
+
   """
   def mult_row(self, v, inplace=False):
     ''' Multiply each row by corresponding value in v '''

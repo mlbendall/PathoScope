@@ -37,7 +37,7 @@ def main(parser):
     print >>sys.stderr, opts
 
   start = time()
-  if True:
+  if False:
     PathoRNA.pathoscope_rna_reassign(opts)
   else:
     PathoRNA.retroscope_reassign(opts)
