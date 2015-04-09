@@ -467,18 +467,6 @@ def pathoscope_rna_reassign(opts):
 
 ########################################################################################################################
 
-def rescale_rawscores(mat):
-  ''' Returns a new matrix rescaled '''
-  _mmax = max(mat.max())
-  _mmin = min(mat.min())
-  _scaling_factor = 100.0 / (_mmax - _mmin) if _mmin < 0 else 100.0 / _mmax
-  return mat.multiply(_scaling_factor).exp()
-
-def normalize_matrix(mat):
-  ''' Returns a new matrix normalized by row '''
-  _inv = [1./v if v != 0 else 1 for v in mat.sum()]
-  return mat.multiply(_inv)
-
 """
 def retroscope_em(Q, Y, G, opts):
 
@@ -559,7 +547,6 @@ def retroscope_em(Q, opts):
 
   pi    = [1./G] * G
   theta = [1./G] * G
-  initPi = pi[:]
 
   weights     = Q.max()
   u_total     = sum(w for y_i,w in zip(Y,weights) if y_i)
@@ -586,14 +573,14 @@ def retroscope_em(Q, opts):
         q_hat.rows[i][j] = (pi[j] * (theta[j]**(1-Y[i])) * q_ij) # / denom
 
     # Expected values of x_i
-    delta_hat = normalize_matrix(q_hat)
+    delta_hat = q_hat.normalize()
     # Weighted delta_hat
-    #w_hat = delta_hat.multiply(weights)
+    w_hat = delta_hat.multiply(weights)
 
     #--- Maximization step:
     # Calculate sum of weighted reads for each genome (thetasum)
     thetasum = [0.] * G
-    for i,r_i in enumerate(delta_hat.multiply(weights).rows):
+    for i,r_i in enumerate(w_hat.rows):
       if not Y[i]:
         for j,w_ij in r_i.iteritems():
           thetasum[j] += w_ij
@@ -610,11 +597,48 @@ def retroscope_em(Q, opts):
     print >>sys.stderr, [pi_hat[0],pi_hat[10],theta_hat[0],theta_hat[10]]
     cutoff = sum(abs(pi[j] - pi_hat[j]) for j in range(G))
     print >>sys.stderr, "[%d]%g" % (iter_num, cutoff)
+    if iter_num == 0: pi_0 = pi_hat
     pi, theta = pi_hat, theta_hat
     if cutoff <= emEpsilon:
       break
 
-  return pi, theta, delta_hat
+  return pi_0, pi, theta, delta_hat
+
+def retroscope_best_hit(mat, l1_thresh=0.5, l2_thresh=0.01):
+  best_reads = [0.] * mat.shape[1]
+  l1_reads   = [0.] * mat.shape[1]
+  l2_reads   = [0.] * mat.shape[1]
+
+  # Maximum value in each row
+  row_max = mat.max()
+  # Number with maximum value in each row
+  num_best =[sum(v==row_max[r] for v in row.values()) for r,row in enumerate(mat.rows)]
+
+  for r,row in enumerate(mat.rows):
+    for j,v in row.iteritems():
+      if v == row_max[r]:
+        best_reads[j] += 1. / num_best[r]
+        if v >= l1_thresh:
+          l1_reads[j] += 1
+        elif v > l2_thresh:
+          l2_reads[j] += 1
+
+  level1 = [float(v)/mat.shape[0] for v in l1_reads]
+  level2 = [float(v)/mat.shape[0] for v in l2_reads]
+  return best_reads, level1, level2
+
+def retroscope_report(rdata, nreads, ngenomes, sortby='final_pi'):
+  # Final best hit read numbers = Final best hit * nreads
+  # Final guess = pi_hat (after optimization)
+  assert ngenomes==len(rdata['final_pi'])
+  comment = ['# Aligned reads:', str(nreads), 'Genomes', str(ngenomes)]
+  header = ['genome','final_pi','final_best_hit', 'final_best','final_l1','final_l2',
+                     'init_pi', 'init_best_hit',  'init_best', 'init_l1', 'init_l2',
+            'fractional_counts','weighted_counts','weighted_raw_counts','unique_counts']
+
+  _rows = [[rdata[h][j] for h in header] for j in range(ngenomes)]
+  _rows.sort(key=lambda x:x[header.index(sortby)], reverse=True)
+  return [comment, header] + _rows
 
 def retroscope_reassign(opts):
   """ Reassignment algorithm for retroscope
@@ -622,6 +646,8 @@ def retroscope_reassign(opts):
   :return:
   """
   from pathoscope.pathorna.utils import RSMatrix
+  from pathoscope.pathorna.utils import calculate_fractional_counts, calculate_weighted_counts, calculate_unique_counts
+  from pathoscope.pathorna.utils import array_to_prop
 
   PSRead.nofeature = opts.no_feature_key
   flookup = AnnotationLookup(opts.gtf_file)
@@ -651,10 +677,25 @@ def retroscope_reassign(opts):
   # reads   = [k for k,v in sorted(ridx.iteritems(),key=lambda x:x[1])]
   # genomes = [k for k,v in sorted(gidx.iteritems(),key=lambda x:x[1])]
 
-  q_mat = rescale_rawscores(raw_mat)
+  q_mat  = raw_mat.rescale()
+  x_init = q_mat.normalize()
 
-  with open(opts.generate_filename('xmat_initial.txt'),'w') as outh:
-    print >>outh, normalize_matrix(q_mat)
+  report_data = {}
+  report_data['genome'] = [k for k,v in sorted(gidx.iteritems(),key=lambda x:x[1])]
+  report_data['fractional_counts']   = calculate_fractional_counts(q_mat)
+  report_data['weighted_counts']     = calculate_weighted_counts(q_mat)
+  report_data['weighted_raw_counts'] = calculate_weighted_counts(raw_mat)
+  report_data['unique_counts']       = calculate_unique_counts(raw_mat)
+
+  t_0 = retroscope_best_hit(x_init)
+  report_data['init_best'] = t_0[0]
+  report_data['init_best_hit'] = [float(v)/R for v in t_0[0]]
+  report_data['init_l1']   = t_0[1]
+  report_data['init_l2']   = t_0[2]
+
+  if opts.out_matrix:
+    with open(opts.generate_filename('xmat_initial.txt'),'w') as outh:
+      print >>outh, x_init #.normalize()
 
   if opts.verbose:
     print >>sys.stderr, "EM iteration..."
@@ -662,10 +703,36 @@ def retroscope_reassign(opts):
     print >>sys.stderr, "Delta Change:"
     emtime = time()
 
-  pi, theta, x_hat = retroscope_em(q_mat, opts)
+  # Run EM algorithm
+  pi_0, pi_hat, theta_hat, x_hat = retroscope_em(q_mat, opts)
 
   if opts.verbose:
     print >>sys.stderr, "Time for EM iteration:".ljust(40) +  "%d seconds" % (time() - emtime)
 
-  with open(opts.generate_filename('xmat_final.txt'),'w') as outh:
-    print >>outh, x_hat
+  report_data['final_pi']  = pi_hat
+
+  if opts.out_matrix:
+    with open(opts.generate_filename('xmat_final.txt'),'w') as outh:
+      print >>outh, x_hat
+
+  report_data['init_pi']   = pi_0
+  report_data['final_pi']  = pi_hat
+
+  print "FINAL"
+  t_F = retroscope_best_hit(x_hat)
+  report_data['final_best'] = t_F[0]
+  report_data['final_best_hit'] = [float(v)/R for v in t_F[0]]
+  report_data['final_l1']   = t_F[1]
+  report_data['final_l2']   = t_F[2]
+
+  # report_data['final_best_hit'] = [float(v)/R for v in ]
+  with open(opts.generate_filename('rs_report.tsv'),'w') as outh:
+    for row in retroscope_report(report_data,R,G):
+      print >>outh, '\t'.join(str(f) for f in row)
+
+  # if not opts.no_updated_sam:
+  #   write the updated SAM file
+
+  samfile.close()
+  # if not opts.no_updated_sam: updated_samfile.close()
+  return

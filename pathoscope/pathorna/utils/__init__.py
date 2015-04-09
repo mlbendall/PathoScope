@@ -3,7 +3,7 @@ __author__ = 'bendall'
 import math
 from AnnotationLookup import AnnotationLookup
 from PathoscopeRead import PathoscopeRead as PSRead
-from RSMatrix import RSMatrix
+from RSMatrix import *
 
 def phred(f):
   """ Calculate phred quality score for given error probability
@@ -29,3 +29,7 @@ def iterread(samfile):
       ralns = [aln]
       current = aln.query_name
   yield current,ralns
+
+def array_to_prop(a):
+  asum = sum(a)
+  return [float(v) / asum for v in a]
