@@ -21,8 +21,8 @@ import os, sys
 def main(parser):
   # Imports
   from time import time
-  pathoscopedir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-  sys.path.insert(0,pathoscopedir)
+  retroscopedir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+  sys.path.insert(0,retroscopedir)
   from pathoscope.pathorna import PathoRNA
 
   # Process arguments
@@ -48,8 +48,8 @@ def main(parser):
 
 if __name__=='__main__':
   import argparse
-  parser = argparse.ArgumentParser(prog="pathoscope_rna.py",
-                                   description="Pathoscope RNA",
+  parser = argparse.ArgumentParser(prog="retroscope.py",
+                                   description="Retroscope",
                                    formatter_class=argparse.ArgumentDefaultsHelpFormatter,
                                   )
   parser.add_argument('-v','--version', action='version', version='%(prog)s 0.9b')
