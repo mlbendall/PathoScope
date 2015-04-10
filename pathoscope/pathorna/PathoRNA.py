@@ -594,9 +594,10 @@ def retroscope_em(Q, opts):
     theta_denom = nu_total + theta_prior * len(thetasum)
     theta_hat = [ ((1. * tsum_j + theta_prior) / theta_denom) for tsum_j in thetasum]
 
-    print >>sys.stderr, [pi_hat[0],pi_hat[10],theta_hat[0],theta_hat[10]]
+    # print >>sys.stderr, [pi_hat[0],pi_hat[10],theta_hat[0],theta_hat[10]]
     cutoff = sum(abs(pi[j] - pi_hat[j]) for j in range(G))
-    print >>sys.stderr, "[%d]%g" % (iter_num, cutoff)
+    if opts.verbose:
+      print >>sys.stderr, "[%d]%g" % (iter_num, cutoff)
     if iter_num == 0: pi_0 = pi_hat
     pi, theta = pi_hat, theta_hat
     if cutoff <= emEpsilon:

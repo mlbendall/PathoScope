@@ -68,7 +68,7 @@ if __name__=='__main__':
                           help='Output Directory')
   outputopts.add_argument('--out_samfile',
                           help='Name for updated alignment file')
-  outputopts.add_argument('--exp_tag', default="pathorna",
+  outputopts.add_argument('--exp_tag', default="retroscope",
                           help='Experiment tag')
   outputopts.add_argument('--report_all', action='store_true',
                           help='Include all genomes in report')
